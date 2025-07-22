@@ -97,6 +97,7 @@ def smooth_normalize(audio: AudioSegment, window_ms: int = 2000, target_level: f
     conv_out = fft_convolve((env * 1e-5) ** 8, window)
     conv_out = np.clip(conv_out, 0.0, None)
     smooth_env = conv_out ** (1.0 / 8) * 1e5
+    smooth_env = np.clip(smooth_env, BLACK_LEVEL, env.max())
 
     # Determine target peak in absolute units
     max_possible = float(2 ** (8 * audio.sample_width - 1) - 1)
@@ -181,7 +182,9 @@ if __name__ == "__main__":
         ("Vivaldi Winter.mp4","0-5,3:38-3:41,5:52-5:55,9:17-9:26"),
         ("Vivaldi - Gloria (RV 589).mp4","0-5,2:31-2:37,5:38-5:50,8:18-8:28,9:49-10:03,13:35-13:43,16:04-16:08,16:15-16:20,20:08-20:14,21:17-21:23,23:40-23:45,24:33-24:36"),
         ("Symphony No. 2 _ Sergei Rachmaninoff _ Vasily Petrenko _ Oslo Philharmonic.mp4","0-25,19:39-20:09,30:11-30:42,59:03-60:00"),
-
+        ("Schubert_ Symphony in C major .mp4", "0-41,13:51-14:11,23:06-23:16,28:44-29:00,44:20-44:30,56:33-59:28"),
+        ("MAHLER Symphony No. 2 Resurrection Lan Shui.mp4", "0-56,23:16-23:59,33:45-34:05,1:27:31-1:38:02"),
+        ("Handel's Messiah Live from the Sydney Opera House.mp4", "0-1:32,21:36-21:39,30:04-30:06,38:20-38:24,39:06-39:08,45:41-1:06:52,1:07:32-1:08:10,2:30:11-2:32:40"),
     ]
     pbar = enumerate(tqdm.tqdm(filelist))
     for idx, (fn, ranges) in pbar:
