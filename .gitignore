@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.dll
+*.dylib
+
+# Virtual env / packaging
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+.poetry/
+.poetry-cache/
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+.profile_default/
+.ipython/
+
+# Logs / debug / profiling
+logs/
+*.log
+*.out
+*.err
+*.prof
+*debug*
+debug_*/
+
+# Checkpoints / weights
+*ckpt*
+*checkpoint*
+*.safetensors
+*.pt
+
+# Data / audio / video (large binaries)
+dataset/
+*.mp4
+*.flac
+*.wav
+*.aiff
+*.aif
+*.ogg
+*.m4a
+
+# Cache / temp
+.cache/
+*.cache
+*.tmp
+tmp/
+temp/
+.DS_Store
+Thumbs.db
+
+# IDEs / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / coverage
+htmlcov/
+.coverage*
+.tox/
+.pytest_cache/
+.mypy_cache/
+pytestdebug.log
+
+# Misc
+.env
+.env.*
+*.bak
+*.orig
+*.pdf
+_demucs
