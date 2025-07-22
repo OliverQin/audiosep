@@ -39,7 +39,6 @@ debug_*/
 *.pt
 
 # Data / audio / video (large binaries)
-dataset/
 *.mp4
 *.flac
 *.wav
