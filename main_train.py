@@ -74,7 +74,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
                               num_workers=num_workers, pin_memory=True)
 
     opt = optim.Adam(model.parameters(), lr=lr, betas=betas)
-    scaler = torch.amp.GradScaler(device_type="cuda", enabled=amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
@@ -89,7 +89,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
             noise = batch["noise"].to(device)
 
             opt.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=amp):
+            with torch.amp.autocast('cuda', enabled=amp):
                 out = model(mix)                # (B,2,C,T)
                 pred_music = out[:, 0]
                 pred_noise = out[:, 1]
