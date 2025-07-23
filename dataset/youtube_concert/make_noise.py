@@ -185,6 +185,9 @@ if __name__ == "__main__":
         ("Schubert_ Symphony in C major .mp4", "0-41,13:51-14:11,23:06-23:16,28:44-29:00,44:20-44:30,56:33-59:28"),
         ("MAHLER Symphony No. 2 Resurrection Lan Shui.mp4", "0-56,23:16-23:59,33:45-34:05,1:27:31-1:38:02"),
         ("Handel's Messiah Live from the Sydney Opera House.mp4", "0-1:32,21:36-21:39,30:04-30:06,38:20-38:24,39:06-39:08,45:41-1:06:52,1:07:32-1:08:10,2:30:11-2:32:40"),
+        ("Handel Celebration Concert _ The English Concert, Händelfestspielorchester Halle, Howard Arman.mp4", "27-59,6:26-7:01,14:11-14:41,20:43-20:49,25:57-26:08,34:18-34:25,36:07-36:14,44:58-45:08,49:59-50:57,54:54-55:23,58:17-58:51,1:07:50-1:07:59,1:12:53-1:13:29,1:18:29-1:19:15,1:33:29-1:34:10,1:39:27-1:42:04"),
+        ("Gustav Mahler - Symphony No. 2 Resurrection (Lucerne Festival Orchestra, Claudio Abbado).mp4", "1:10-1:39,12:48-12:53,55:40-55:49,1:22:34-1:22:44"),
+        ("Full Concert live from Moscow, Tchaikovsky Concert Hall – Baltic Sea Philharmonic.mp4", "6-58,13:56-15:01,25:13-25:42,47:10-48:56,51:56-53:23,59:57-1:00:37,1:09:14-1:10:24,1:43:03-1:43:32,1:48:06-1:50:01,1:54:15-2:00:25")
     ]
     pbar = enumerate(tqdm.tqdm(filelist))
     for idx, (fn, ranges) in pbar:
