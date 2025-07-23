@@ -66,12 +66,16 @@ def main():
     rnd = random.Random(args.seed)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    flacs = sorted(args.input_dir.glob("*.flac"))
-    if not flacs:
-        print("No FLAC files found.")
+    files = []
+    for ext in ['flac', 'wav', 'wave', 'aiff', 'mp3']:
+        files += list(args.input_dir.glob("*." + ext))
+    files.sort()
+
+    if not files:
+        print("No FLAC/WAV/WAVE/AIFF/MP3 files found.")
         return
 
-    for f in tqdm(flacs, desc="Processing", unit="file"):
+    for f in tqdm(files, desc="Processing", unit="file"):
         process_file(f, args.output_dir, sr=args.sr, bitdepth=args.bitdepth, rnd=rnd)
 
     print("Done.")
