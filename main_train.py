@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import time
 import soundfile
 import torch
 
@@ -105,6 +106,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
             running_loss += loss.item()
             pbar.set_postfix(loss=running_loss / (pbar.n or 1))
 
+        eval_ds.reset_seed()
         metrics = evaluate(model, eval_loader, device)
         print(f"[Epoch {epoch}] loss={running_loss/len(train_loader):.4f} | "
               f"SI-SDR_music={metrics['SI-SDR_music']:.2f} | "
@@ -120,18 +122,18 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
 
 if __name__ == '__main__':
     music_dirs = ["./dataset/baroque_music/wavs"]
-    noise_dirs = ["./dataset/youtube_concert/wavs"]
+    noise_dirs = ["./dataset/youtube_concert/wavs", "./dataset/freesound_noise/wavs"]
 
     model = HTDemucs(['music', 'noise'])
 
-    music_aug = Augmenter(gain_db_range=(-2, 2), swap_channels_prob=0.1, eq_prob=0.1)
-    noise_aug = Augmenter(gain_db_range=(-6, 6), swap_channels_prob=0.5, eq_prob=0.3)
+    music_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.1, eq_prob=0.1)
+    noise_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.3)
 
     train_ds = BaroqueNoiseDataset(
         music_dirs, noise_dirs,
         seg_len=2**19,
         mode='train',
-        seed=1234,
+        seed=int(time.time()),
         music_augment=music_aug,
         noise_augment=noise_aug
     )
