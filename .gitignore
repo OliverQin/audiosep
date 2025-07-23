@@ -46,6 +46,7 @@ debug_*/
 *.aif
 *.ogg
 *.m4a
+*.mp3
 
 # Cache / temp
 .cache/
