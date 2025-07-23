@@ -244,7 +244,7 @@ class BaroqueNoiseDataset(Dataset):
     def reset_seed(self):
         if self.mode == 'eval':
             self.seed = 42
-            self.rnd = random.Random(seed)
+            self.rnd = random.Random(self.seed)
 
     def __getitem__(self, index):
         # music
