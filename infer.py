@@ -43,7 +43,7 @@ def overlap_add_sliding(x, chunk_len, hop, process_fn):
     n_chunks = 1 + int(np.ceil((T - chunk_len) / hop)) if T > chunk_len else 1
 
     # Hann window：window L
-    win = np.hanning(chunk_len).astype(np.float32) + 1e-3  # [0..1..0]
+    win = np.hanning(chunk_len).astype(np.float32) + 1e-6  # [0..1..0]
     win = win[:, None]  # (L,1) broadcast to LC
 
     out_music = np.zeros((T, C), dtype=np.float32)
