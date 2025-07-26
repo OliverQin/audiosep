@@ -62,6 +62,13 @@ def evaluate(model, loader, device):
         "SI-SDR_noise": torch.cat(sdr_noise_all).mean().item()
     }
 
+def load_model_ckpt(model, optimizer, scaler, path, device):
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model_state"])
+    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    scaler.load_state_dict(checkpoint["scaler_state"])
+    return 
+
 def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
                epochs=10, batch_size=8, lr=3e-4, betas=(0.9, 0.999),
                num_workers=4, device="cuda", grad_clip=None, amp=True):
@@ -79,6 +86,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
+    # load_model_ckpt(model, opt, scaler, "ckpt_recorder_v2/epoch_007.pt", device)
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss = 0.0
@@ -121,13 +129,13 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
         }, os.path.join(save_dir, f"epoch_{epoch:03d}.pt"))
 
 if __name__ == '__main__':
-    music_dirs = ["./dataset/baroque_music/wavs"]
-    noise_dirs = ["./dataset/youtube_concert/wavs", "./dataset/freesound_noise/wavs"]
+    music_dirs = ["./dataset/flute_recorder/wavs"]
+    noise_dirs = ["./dataset/classical_nowoodwind/wavs"]
 
-    model = HTDemucs(['music', 'noise'])
+    model = HTDemucs(['music', 'accompany'])
 
-    music_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.1, eq_prob=0.1)
-    noise_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.3)
+    music_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.2)
+    noise_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.2)
 
     train_ds = BaroqueNoiseDataset(
         music_dirs, noise_dirs,
@@ -146,8 +154,8 @@ if __name__ == '__main__':
         noise_augment=None
     )
 
-    train_loop(model, train_ds, eval_ds, save_dir="ckpt",
-               epochs=10, batch_size=4, lr=3e-4, betas=(0.9, 0.999),
+    train_loop(model, train_ds, eval_ds, save_dir="ckpt_recorder_v2",
+               epochs=30, batch_size=4, lr=3e-4, betas=(0.9, 0.999),
                num_workers=4, device="cuda", grad_clip=None, amp=True)
 
 
