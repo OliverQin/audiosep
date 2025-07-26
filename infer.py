@@ -10,6 +10,7 @@ import argparse
 import pathlib
 import soundfile
 import soxr
+import ffmpeg
 import numpy as np
 import torch
 
@@ -22,6 +23,15 @@ from htdemucs import *
 
 from tqdm import tqdm
 
+def load_audio_ffmpeg(path, target_sr=44100):
+    out, _ = (
+        ffmpeg
+        .input(path)
+        .output('pipe:', format='f32le', acodec='pcm_f32le', ac=2, ar=target_sr)
+        .run(capture_stdout=True, capture_stderr=True)
+    )
+    audio = np.copy(np.frombuffer(out, np.float32).reshape(-1, 2))
+    return audio, target_sr
 
 def load_audio(path, target_sr=44100):
     audio, sr = soundfile.read(path, always_2d=True)  # (T,C)
@@ -144,7 +154,7 @@ def main():
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     # --- load audio ---
-    audio_np, sr = load_audio(args.flac, args.sr)  # (T,C)
+    audio_np, sr = load_audio_ffmpeg(args.flac, args.sr)  # (T,C)
     T, C = audio_np.shape
 
     # --- load model ---
