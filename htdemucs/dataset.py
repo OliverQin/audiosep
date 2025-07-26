@@ -259,7 +259,7 @@ class BaroqueNoiseDataset(Dataset):
 
         # You can also return mix here if you want:
         # Combine with random SNR each call
-        snr_db = self.rnd.uniform(0, 10)  # example range
+        snr_db = self.rnd.uniform(-10, 10)  # example range
         # scale noise to achieve SNR
         music_power = music.pow(2).mean()
         noise_power = noise.pow(2).mean() + 1e-12
