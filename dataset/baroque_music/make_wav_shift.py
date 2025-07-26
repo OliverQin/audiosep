@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
 import argparse
 import pathlib
+import ffmpeg
 import random
 import soundfile as sf
 import soxr
 import numpy as np
 import pyrubberband as prb
 from tqdm import tqdm
+
+def load_audio_ffmpeg(path, target_sr=44100):
+    out, _ = (
+        ffmpeg
+        .input(path)
+        .output('pipe:', format='f32le', acodec='pcm_f32le', ac=2, ar=target_sr)
+        .run(capture_stdout=True, capture_stderr=True)
+    )
+    audio = np.copy(np.frombuffer(out, np.float32).reshape(-1, 2))
+    return audio, target_sr
 
 def stratified_two_steps(low=-2.0, high=2.0, rnd=None):
     """Return two pitch shift steps: one from [low,0) and one from (0,high]."""
@@ -34,9 +45,10 @@ index = 0
 def process_file(flac_path, out_dir, sr=44100, bitdepth="FLOAT", rnd=None):
     global index
     rnd = rnd or random
-    data, in_sr = sf.read(flac_path, always_2d=True)  # (T, C)
-    if in_sr != sr:
-        data = soxr.resample(data, in_sr, sr, quality="VHQ")
+    # data, in_sr = sf.read(flac_path, always_2d=True)  # (T, C)
+    # if in_sr != sr:
+    #    data = soxr.resample(data, in_sr, sr, quality="VHQ")
+    data, in_sr = load_audio_ffmpeg(flac_path, target_sr=sr)
 
     neg_step, pos_step = stratified_two_steps(-2.0, 2.0, rnd=rnd)
 
@@ -67,7 +79,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     files = []
-    for ext in ['flac', 'wav', 'wave', 'aiff', 'mp3']:
+    for ext in ['flac', 'wav', 'wave', 'aiff', 'mp3', 'mp4']:
         files += list(args.input_dir.glob("*." + ext))
     files.sort()
 
