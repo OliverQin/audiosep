@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 
 import numpy as np
+import soundfile as sf
 import torch
 import torchaudio
 from torch.utils.data import Dataset
@@ -105,6 +106,9 @@ class Augmenter:
         self.rnd = rnd_gen or random.Random()
         self.pitch_semitone_range = pitch_semitone_range
 
+    def seed(self, x):
+        self.rnd.seed(x)
+
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         # x: (C, T) float32
         # Gain
@@ -148,6 +152,7 @@ class BaroqueNoiseDataset(Dataset):
     def __init__(self,
                  music_dirs: List[str],
                  noise_dirs: List[str],
+                 rirs_path: str or None,
                  seg_len: int,
                  mode: str = 'train',
                  seed: Optional[int] = None,
@@ -161,6 +166,7 @@ class BaroqueNoiseDataset(Dataset):
         """
         assert mode in ('train', 'eval')
         self.mode = mode
+
         if seed is None:
             seed = 42 if mode == 'eval' else random.randrange(1 << 31)
         self.seed = seed
@@ -169,6 +175,9 @@ class BaroqueNoiseDataset(Dataset):
         self.sr = sr
         self.seg_len = seg_len
         self.channels = channels
+
+        self.rirs_path = rirs_path
+        self._load_rirs()
 
         # collect files
         self.music_paths = _gather_wavs([Path(p) for p in music_dirs])
@@ -211,18 +220,39 @@ class BaroqueNoiseDataset(Dataset):
         self.noise_weights = np.array([max(0, d["frames"] - self.seg_len) for d in self.noise_db], dtype=np.float64)
         self.noise_weights /= self.noise_weights.sum()
 
+        self.music_cumsum_weights = np.cumsum(self.music_weights)
+        self.noise_cumsum_weights = np.cumsum(self.noise_weights)
+
         # augmenters (can be None)
         self.music_aug = music_augment
         self.noise_aug = noise_augment
+    
+    def _load_rirs(self):
+        self.rirs = []
+        if not self.rirs_path:
+            return
+
+        wav_paths = sorted(Path(self.rirs_path).glob("*.wav"))
+        for path in wav_paths:
+            data, _ = sf.read(path)
+            arr = data.T.astype(np.float32)
+            if arr.shape[1] >= self.seg_len:
+                arr = arr[:, :self.seg_len]
+            else:
+                arr = np.pad(rir, [[0, 0], [0, self.seg_len - arr.shape[1]]])
+            assert tuple(arr.shape) == (2, self.seg_len)
+
+            self.rirs.append([np.fft.fft(arr[0]), np.fft.fft(arr[1])])
+        return
 
     def __len__(self):
         if self.mode == 'eval':
             return self._length // 16
         return self._length
 
-    def _pick_segment(self, db_list, weights) -> torch.Tensor:
+    def _pick_segment(self, db_list, cumsum_weights) -> torch.Tensor:
         # pick file index by weights
-        idx = self._weighted_choice(weights)
+        idx = self._weighted_choice(cumsum_weights)
         entry = db_list[idx]
         frames = entry["frames"]
         if frames <= self.seg_len:
@@ -232,29 +262,49 @@ class BaroqueNoiseDataset(Dataset):
         end = start + self.seg_len
         # slice memmap -> numpy -> torch float
         seg = entry["mm"][start:end, :]  # shape (T, C)
+        seg = seg.astype(np.float32) * (1.0 / 32768.0)
+        seg = seg.T
+
+        # Random RIRS
+        if self.rirs:
+            idx = self.rnd.randrange(0, len(self.rirs))
+
+            for ch in range(2):
+                maxv = np.abs(seg[ch]).max()
+                this_chn = np.real(np.fft.ifft(np.fft.fft(seg[ch]) * self.rirs[idx][ch]))
+                after_maxv = np.abs(this_chn).max()
+                seg[ch] = this_chn * (maxv / after_maxv)
+
         # to torch
-        seg = torch.from_numpy(seg.astype(np.float32) / 32768.0).transpose(0, 1)  # (C,T)
+        seg = torch.from_numpy(seg)
         return seg
 
-    def _weighted_choice(self, weights: np.ndarray) -> int:
+    def _weighted_choice(self, cumsum_weights: np.ndarray) -> int:
         # random.Random has random() in [0,1)
         x = self.rnd.random()
-        return int(np.searchsorted(np.cumsum(weights), x, side='right'))
+        return int(np.searchsorted(cumsum_weights, x, side='right'))
 
     def reset_seed(self):
         if self.mode == 'eval':
             self.seed = 42
             self.rnd = random.Random(self.seed)
+        else:
+            self.seed = random.SystemRandom().randrange(2**31)
+            self.rnd = random.Random(self.seed)
 
     def __getitem__(self, index):
+        self.rnd.seed(str([self.seed, index]))
+
         # music
-        music = self._pick_segment(self.music_db, self.music_weights)
+        music = self._pick_segment(self.music_db, self.music_cumsum_weights)
         if self.music_aug is not None:
+            self.music_aug.seed(str([self.seed, index, 'music']))
             music = self.music_aug(music)
 
         # noise
-        noise = self._pick_segment(self.noise_db, self.noise_weights)
+        noise = self._pick_segment(self.noise_db, self.noise_cumsum_weights)
         if self.noise_aug is not None:
+            self.noise_aug.seed(str([self.seed, index, 'noise']))
             noise = self.noise_aug(noise)
 
         # You can also return mix here if you want:
