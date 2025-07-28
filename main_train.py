@@ -77,17 +77,18 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
     model.to(device)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              num_workers=num_workers, pin_memory=True, drop_last=True)
+                              num_workers=num_workers, drop_last=True)
     eval_loader  = DataLoader(eval_ds,  batch_size=batch_size, shuffle=False,
-                              num_workers=num_workers, pin_memory=True)
+                              num_workers=num_workers, drop_last=True)
 
     opt = optim.Adam(model.parameters(), lr=lr, betas=betas)
     scaler = torch.amp.GradScaler("cuda", enabled=amp)
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-    # load_model_ckpt(model, opt, scaler, "ckpt_recorder_v2/epoch_007.pt", device)
+    # load_model_ckpt(model, opt, scaler, "ckpt_recorder_v4/epoch_017.pt", device)
     for epoch in range(1, epochs + 1):
+        train_ds.reset_seed()
         model.train()
         running_loss = 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False)
@@ -129,16 +130,17 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
         }, os.path.join(save_dir, f"epoch_{epoch:03d}.pt"))
 
 if __name__ == '__main__':
-    music_dirs = ["./dataset/flute_recorder/wavs"]
+    music_dirs = ["./dataset/flute_recorder/wavs", "./dataset/flute_recorder_fake/wavs", "./dataset/flute_recorder_homebrew/wavs"]
     noise_dirs = ["./dataset/classical_nowoodwind/wavs"]
 
-    model = HTDemucs(['music', 'accompany'])
+    model = HTDemucs(['music', 'accompany'], t_layers=7)
 
     music_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.2)
     noise_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.2)
 
     train_ds = BaroqueNoiseDataset(
         music_dirs, noise_dirs,
+        rirs_path='./rirs',
         seg_len=2**19,
         mode='train',
         seed=int(time.time()),
@@ -148,14 +150,15 @@ if __name__ == '__main__':
 
     eval_ds = BaroqueNoiseDataset(
         music_dirs, noise_dirs,
+        rirs_path=None,
         seg_len=2**19,
         mode='eval',
         music_augment=None,
         noise_augment=None
     )
 
-    train_loop(model, train_ds, eval_ds, save_dir="ckpt_recorder_v2",
-               epochs=30, batch_size=4, lr=3e-4, betas=(0.9, 0.999),
+    train_loop(model, train_ds, eval_ds, save_dir="ckpt_recorder_v4",
+               epochs=60, batch_size=4, lr=3e-4, betas=(0.9, 0.999),
                num_workers=4, device="cuda", grad_clip=None, amp=True)
 
 
