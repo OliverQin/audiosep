@@ -239,7 +239,7 @@ class BaroqueNoiseDataset(Dataset):
             if arr.shape[1] >= self.seg_len:
                 arr = arr[:, :self.seg_len]
             else:
-                arr = np.pad(rir, [[0, 0], [0, self.seg_len - arr.shape[1]]])
+                arr = np.pad(arr, [[0, 0], [0, self.seg_len - arr.shape[1]]])
             assert tuple(arr.shape) == (2, self.seg_len)
 
             self.rirs.append([np.fft.fft(arr[0]), np.fft.fft(arr[1])])
