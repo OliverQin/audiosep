@@ -15,7 +15,7 @@ def generate_random_rir(
     room_x_range=(3, 60),
     room_y_range=(2, 40),
     room_h_range=(3, 6),
-    absorption_range=(0.2, 0.9),
+    absorption_range=(0.01, 0.9),
     mic_xy_angle_range=(50, 130),
     mic_distance_range=(0, 0.02),
 ):
@@ -27,15 +27,15 @@ def generate_random_rir(
     ]
     
     # 2. Random absorption rate
-    abs_coef = np.random.uniform(*absorption_range)
-    materials = pra.Material(energy_absorption=abs_coef)
+    abs_coef = sample_log_uniform(*absorption_range)
+    materials = pra.Material(energy_absorption=abs_coef, scattering=sample_log_uniform(0.001, 0.9))
     
     # 3. ShoeBox room
     room = pra.ShoeBox(
         p=room_dims,
         fs=fs,
         materials=materials,
-        max_order=15,            # Max times of reflection
+        max_order=20,            # Max times of reflection
         air_absorption=True
     )
     
@@ -93,7 +93,7 @@ def generate_random_rir(
 if __name__ == '__main__':
     np.random.seed(31415926)
 
-    for i in range(128):
+    for i in range(256):
         a = generate_random_rir().T
         sf.write(f"rirs/{i:06d}.wav", a, 44100, subtype="FLOAT")
 
