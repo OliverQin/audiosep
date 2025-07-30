@@ -12,18 +12,19 @@ def sample_log_uniform(low, high):
 def generate_random_rir(
     fs=44100,
     rir_length=2**19,
-    room_x_range=(3, 60),
-    room_y_range=(2, 40),
-    room_h_range=(3, 6),
+    room_xy_range=(3, 60),
+    room_h_range=(3, 50),
     absorption_range=(0.01, 0.9),
     mic_xy_angle_range=(50, 130),
     mic_distance_range=(0, 0.02),
 ):
     # 1. Random geometrics of the room (x, y, h)
+    room_size = sample_log_uniform(*room_xy_range)
+    room_height = sample_log_uniform(*room_h_range)
     room_dims = [
-        sample_log_uniform(*room_x_range),
-        sample_log_uniform(*room_y_range),
-        sample_log_uniform(*room_h_range)
+        room_size,
+        room_size,
+        room_height
     ]
     
     # 2. Random absorption rate
@@ -35,7 +36,7 @@ def generate_random_rir(
         p=room_dims,
         fs=fs,
         materials=materials,
-        max_order=20,            # Max times of reflection
+        max_order=100,            # Max times of reflection
         air_absorption=True
     )
     
