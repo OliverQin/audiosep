@@ -14,7 +14,7 @@ def generate_random_rir(
     rir_length=2**19,
     room_xy_range=(3, 60),
     room_h_range=(3, 50),
-    absorption_range=(0.01, 0.9),
+    absorption_range=(0.1, 0.9),
     mic_xy_angle_range=(50, 130),
     mic_distance_range=(0, 0.02),
 ):
