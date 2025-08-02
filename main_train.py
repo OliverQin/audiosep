@@ -86,7 +86,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-    # load_model_ckpt(model, opt, scaler, "ckpt_recorder_v4/epoch_017.pt", device)
+    # load_model_ckpt(model, opt, scaler, "ckpt_recorder_v4/epoch_029.pt", device)
     for epoch in range(1, epochs + 1):
         train_ds.reset_seed()
         model.train()
@@ -103,7 +103,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
                 out = model(mix)                # (B,2,C,T)
                 pred_music = out[:, 0]
                 pred_noise = out[:, 1]
-                loss = l1_loss(pred_music, music) + l1_loss(pred_noise, noise)
+                loss = l1_loss(pred_music, music) + l1_loss(pred_noise, noise) + 0.5 * l1_loss(pred_music + pred_noise, mix)
 
             scaler.scale(loss).backward()
             if grad_clip is not None:
@@ -135,8 +135,8 @@ if __name__ == '__main__':
 
     model = HTDemucs(['music', 'accompany'], t_layers=7)
 
-    music_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.2)
-    noise_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.2)
+    music_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.2, rnd_noise_prob=0.02)
+    noise_aug = Augmenter(gain_db_range=(-3, 3), swap_channels_prob=0.5, eq_prob=0.2, rnd_noise_prob=0.0)
 
     train_ds = BaroqueNoiseDataset(
         music_dirs, noise_dirs,
@@ -157,8 +157,8 @@ if __name__ == '__main__':
         noise_augment=None
     )
 
-    train_loop(model, train_ds, eval_ds, save_dir="ckpt_recorder_v4",
-               epochs=60, batch_size=4, lr=3e-4, betas=(0.9, 0.999),
+    train_loop(model, train_ds, eval_ds, save_dir="ckpt_recorder_v7",
+               epochs=45, batch_size=4, lr=3e-4, betas=(0.9, 0.999),
                num_workers=4, device="cuda", grad_clip=None, amp=True)
 
 
