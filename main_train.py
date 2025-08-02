@@ -131,7 +131,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
 
 if __name__ == '__main__':
     music_dirs = ["./dataset/flute_recorder/wavs", "./dataset/flute_recorder_fake/wavs", "./dataset/flute_recorder_homebrew/wavs"]
-    noise_dirs = ["./dataset/classical_nowoodwind/wavs"]
+    noise_dirs = ["./dataset/classical_nowoodwind/wavs", "./dataset/baroque_live_nowoodwind/wavs"]
 
     model = HTDemucs(['music', 'accompany'], t_layers=7)
 
