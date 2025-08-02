@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 
 import numpy as np
+import scipy.signal as sps
 import soundfile as sf
 import torch
 import torchaudio
@@ -97,6 +98,7 @@ class Augmenter:
                  swap_channels_prob: float = 0.1,
                  eq_prob: float = 0.2,
                  eq_gain_db: float = 2.0,
+                 rnd_noise_prob: float = 0.0,
                  pitch_semitone_range: Tuple[float, float] = None,
                  rnd_gen: Optional[random.Random] = None):
         self.gain_db_range = gain_db_range
@@ -105,6 +107,10 @@ class Augmenter:
         self.eq_gain_db = eq_gain_db
         self.rnd = rnd_gen or random.Random()
         self.pitch_semitone_range = pitch_semitone_range
+        self.rnd_noise_prob = rnd_noise_prob
+
+        # TODO: fix this hard code of 44100
+        self.flt_b, self.flt_a = sps.butter(4, [7000, 12000], 'bandpass', fs=44100)
 
     def seed(self, x):
         self.rnd.seed(x)
@@ -142,6 +148,20 @@ class Augmenter:
             mask = 1.0 + (gain - 1.0) * mask  # linear tilt
             x = x * mask.unsqueeze(0)
 
+        # Some 7k-12k noise
+        if self.rnd.random() < self.rnd_noise_prob:
+            noise = np.random.randn(*x.shape).astype(np.float32)
+            hiss  = sps.lfilter(self.flt_b, self.flt_a, noise, axis=-1)
+            hiss  = sps.lfilter([1.0], [1, -0.97], hiss, axis=-1)       # Long tail
+            snr   = np.random.uniform(0.0, 30.0)
+            s_norm = np.sqrt((x ** 2).mean().item())
+            hiss = hiss.astype(np.float32)
+            gain = 10 ** (-snr / 20) * s_norm / (np.sqrt(np.mean(hiss ** 2)) + 1e-8)
+            print('gain', gain)
+            hiss *= gain
+
+            x += torch.from_numpy(hiss).to(x.device)
+        
         return x
 
 
