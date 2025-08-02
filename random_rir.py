@@ -14,7 +14,7 @@ def generate_random_rir(
     rir_length=2**19,
     room_xy_range=(3, 60),
     room_h_range=(3, 50),
-    absorption_range=(0.1, 0.9),
+    absorption_range=(0.01, 0.9),
     mic_xy_angle_range=(50, 130),
     mic_distance_range=(0, 0.02),
 ):
@@ -74,11 +74,15 @@ def generate_random_rir(
 
     # room.rir -> list of list: shape (n_mics, n_sources)
     rirs = []
+    max_len = 0
     for mic_idx in range(len(room.rir)):
         rir = np.array(room.rir[mic_idx][0])
-        if len(rir) < rir_length:
-            rir = np.pad(rir, (0, rir_length - len(rir)))
-        else:
+        max_len = max(max_len, len(rir))
+
+    for mic_idx in range(len(room.rir)):
+        if len(rir) < max_len:
+            rir = np.pad(rir, (0, max_len - len(rir)))
+        if len(rir) > rir_length:
             rir = rir[:rir_length]
         rirs.append(rir)
     
