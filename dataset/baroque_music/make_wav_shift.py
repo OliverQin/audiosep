@@ -79,7 +79,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     files = []
-    for ext in ['flac', 'wav', 'wave', 'aiff', 'mp3', 'mp4']:
+    for ext in ['flac', 'wav', 'wave', 'aiff', 'mp3', 'mp4', 'opus']:
         files += list(args.input_dir.glob("*." + ext))
     files.sort()
 
