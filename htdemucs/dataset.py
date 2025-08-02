@@ -157,7 +157,6 @@ class Augmenter:
             s_norm = np.sqrt((x ** 2).mean().item())
             hiss = hiss.astype(np.float32)
             gain = 10 ** (-snr / 20) * s_norm / (np.sqrt(np.mean(hiss ** 2)) + 1e-8)
-            print('gain', gain)
             hiss *= gain
 
             x += torch.from_numpy(hiss).to(x.device)
