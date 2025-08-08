@@ -37,7 +37,8 @@ def generate_random_rir(
         fs=fs,
         materials=materials,
         max_order=100,            # Max times of reflection
-        air_absorption=True
+        air_absorption=True,
+        ray_tracing=True
     )
     
     # 4. Source should be >=0.5m to the wall
@@ -92,6 +93,13 @@ def generate_random_rir(
     for ch in range(2):
         v_sum = output[ch].sum()
         output[ch] /= np.abs(v_sum)
+
+    # cut empty start
+    THRESHOLD = 1e-6
+    bp = 0
+    while bp + 1 < output.shape[1] and np.abs(output[:, bp]).max() < THRESHOLD:
+        bp += 1
+    output = output[:, bp:]
 
     return output 
 
