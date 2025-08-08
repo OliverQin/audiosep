@@ -107,6 +107,9 @@ if __name__ == '__main__':
     np.random.seed(31415926)
 
     for i in range(256):
-        a = generate_random_rir().T
+        try:
+            a = generate_random_rir().T
+        except:
+            a = generate_random_rir().T
         sf.write(f"rirs/{i:06d}.wav", a, 44100, subtype="FLOAT")
 
