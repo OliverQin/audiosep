@@ -108,17 +108,15 @@ class BaroqueNoiseDataset(Dataset):
         self.mode = mode
 
         if mode == 'eval':
-            self.seed = 42
+            self.salt = 42
         else:
-            self.seed = random.SystemRandom().randrange(1 << 63)
-        self.rnd = np.random.Generator(np.random.PCG64(self.seed))
+            self.salt = random.SystemRandom().randrange(1 << 63)
+        self.rnd = np.random.Generator(np.random.PCG64(self.salt))
 
         self.sr = sr
         self.seg_len = seg_len
         self.channels = channels
         self.valid_freqs = []
-        if speed_change_range:
-            self._init_speed_change_freqs(speed_change_range, min_gcd=100)
 
         self.rirs_path = rirs_path
         self._load_rirs()
@@ -166,6 +164,11 @@ class BaroqueNoiseDataset(Dataset):
         self.noise_weights = np.array([max(0, d["frames"] - self.seg_len) for d in self.noise_db], dtype=np.float64)
         self.noise_weights /= self.noise_weights.sum()
         self.noise_cumsum_weights = np.cumsum(self.noise_weights)
+
+        # augmentation parameters
+        self.swap_channels_prob = swap_channels_prob
+        if speed_change_range:
+            self._init_speed_change_freqs(speed_change_range, min_gcd=100)
     
     def _init_speed_change_freqs(self, speed_change_range, min_gcd):
         """
@@ -203,19 +206,20 @@ class BaroqueNoiseDataset(Dataset):
                 arr = arr[:, :krn_len]
             else:
                 arr = np.pad(arr, [[0, 0], [0, krn_len - arr.shape[1]]])
-            assert tuple(arr.shape) == (2, self.seg_len)
+            assert tuple(arr.shape) == (2, self.seg_len * 2)
 
-            lhs, rhs = np.fft.fft(arr[0]), np.fft.fft(arr[1])
-            lhs, rhs = torch.from_numpy(lhs, dtype=torch.complex64), torch.from_numpy(rhs, dtype=torch.complex64)
+            lhs = np.fft.fft(arr[0]).astype(np.complex64)
+            rhs = np.fft.fft(arr[1]).astype(np.complex64)
+            lhs, rhs = torch.from_numpy(lhs), torch.from_numpy(rhs)
             self.rirs.append([lhs, rhs])
 
-    def _pick_rirs(self):
+    def _pick_rir(self):
         if not self.rirs:
             return None
             
         # Randomly select two RIRs (can be the same)
-        idx1 = self.rnd.randint(0, len(self.rirs))
-        idx2 = self.rnd.randint(0, len(self.rirs))
+        idx1 = self.rnd.integers(len(self.rirs))
+        idx2 = self.rnd.integers(0, len(self.rirs))
         
         # Random blend factor between 0 and 1
         blend = self.rnd.random()
@@ -226,39 +230,74 @@ class BaroqueNoiseDataset(Dataset):
         
         return [lhs, rhs]
 
-
     def __len__(self):
         if self.mode == 'eval':
             return self._length // 16
         return self._length
 
-    def _pick_segment(self, db_list, cumsum_weights) -> torch.Tensor:
-        # pick file index by weights
+    @torch.no_grad()
+    def _pick_segment(self, db_list, cumsum_weights, rir) -> torch.Tensor:
+        # Pick file index by weights
         idx = self._weighted_choice(cumsum_weights)
         entry = db_list[idx]
         frames = entry["frames"]
+
+        # Calculate required frames for resampling
+        orig_freq = self.sr
+        if self.valid_freqs and len(self.valid_freqs) > 0:
+            orig_freq = self.rnd.choice(self.valid_freqs)
+            orig_len = math.ceil(2 * self.seg_len * orig_freq / self.sr)
+        else:
+            orig_len = 2 * self.seg_len
+
+        # Calculate start position
         if frames <= self.seg_len:
             start = 0
         else:
-            start = self.rnd.randint(0, frames - self.seg_len - 1)
-        end = start + self.seg_len
-        # slice memmap -> numpy -> torch float
-        seg = entry["mm"][start:end, :]  # shape (T, C)
+            start = self.rnd.integers(frames - self.seg_len)
+        head = start - orig_len // 2
+        tail = head + orig_len
+
+        lpad = 0 if head >= 0 else -head
+        rpad = 0 if tail <= frames else tail - frames
+
+        if head < 0:
+            head = 0
+        if tail > frames:
+            tail = frames
+
+        # Slice memmap -> numpy -> torch float
+        seg = entry["mm"][head:tail, :]  # shape (T, C)
         seg = seg.astype(np.float32) * (1.0 / 32768.0)
         seg = seg.T
+        if lpad > 0 or rpad > 0:
+            seg = np.pad(seg, ((0, 0), (lpad, rpad)), mode='constant', constant_values=0)
 
-        # Random RIRS
-        if self.rirs:
-            idx = self.rnd.randrange(0, len(self.rirs))
+        seg = torch.from_numpy(seg)  # (C, T)
 
-            for ch in range(2):
-                maxv = np.abs(seg[ch]).max()
-                this_chn = np.real(np.fft.ifft(np.fft.fft(seg[ch]) * self.rirs[idx][ch]))
-                after_maxv = np.abs(this_chn).max()
-                seg[ch] = this_chn * (maxv / after_maxv)
+        # Resample if needed
+        if orig_freq != self.sr:
+            seg = torchaudio.functional.resample(seg, orig_freq, self.sr)
 
-        # to torch
-        seg = torch.from_numpy(seg)
+        # Swap channels if needed
+        if self.swap_channels_prob > 0 and self.rnd.random() < self.swap_channels_prob:
+            seg = seg.flip(0)
+
+        # Minor rounding to ensure length
+        if seg.shape[1] > 2 * self.seg_len:
+            seg = seg[:, :2 * self.seg_len]
+
+        if rir:
+            maxv = np.abs(seg).max()
+            fft_seg = torch.fft.fft(seg, dim=-1)
+            fft_seg[0, :] *= rir[0]
+            fft_seg[1, :] *= rir[1]
+            seg = torch.fft.ifft(fft_seg, dim=-1).real
+
+            after_maxv = np.abs(seg).max() + 1e-7
+            seg = seg * (maxv / after_maxv)
+
+        seg = seg[:, -self.seg_len:]
         return seg
 
     def _weighted_choice(self, cumsum_weights: np.ndarray) -> int:
@@ -268,24 +307,32 @@ class BaroqueNoiseDataset(Dataset):
 
     def reset_seed(self):
         if self.mode == 'eval':
-            self.seed = 42
+            self.salt = 42
         else:
-            self.seed = random.SystemRandom().randrange(1 << 63)
-        self.rnd.seed(self.seed)
+            self.salt = random.SystemRandom().randrange(1 << 63)
+        self.rnd = np.random.Generator(np.random.PCG64(self.salt))
 
     def __getitem__(self, index):
-        self.rnd.seed(hash((self.seed, index)))
+        salt_item = hash((self.salt, index)) & 0x7fffffff
+        self.rnd = np.random.Generator(np.random.PCG64(salt_item))
 
-        # music
-        music = self._pick_segment(self.music_db, self.music_cumsum_weights)
+        # Random RIRS
+        rir = self._pick_rir()
+        if self.swap_channels_prob > 0 and self.rnd.random() < self.swap_channels_prob:
+            rir = [rir[1], rir[0]]
 
-        # noise
-        noise = self._pick_segment(self.noise_db, self.noise_cumsum_weights)
+        # Pick segments
+        music = self._pick_segment(self.music_db, self.music_cumsum_weights, rir)
+        noise = self._pick_segment(self.noise_db, self.noise_cumsum_weights, rir)
 
-        # You can also return mix here if you want:
-        # Combine with random SNR each call
+        # Music peak normalization
+        target_peak = self.rnd.uniform(0.1, 0.9)
+        music_peak = music.abs().max()
+        music = music * (target_peak / (music_peak + 1e-6))
+
+        # Noise normalization
         snr_db = self.rnd.uniform(-10, 10)  # example range
-        # scale noise to achieve SNR
+
         music_power = music.pow(2).mean()
         noise_power = noise.pow(2).mean() + 1e-12
         target_noise_power = music_power / (10 ** (snr_db / 10))
@@ -299,3 +346,37 @@ class BaroqueNoiseDataset(Dataset):
             "noise": noise_scaled,    # scaled version
             "snr_db": torch.tensor(snr_db, dtype=torch.float32)
         }
+
+
+if __name__ == "__main__":
+    # Example usage
+    dataset = BaroqueNoiseDataset(
+        music_dirs=["./dataset/flute_recorder_sopranino/wavs"],
+        noise_dirs=["./dataset/classical_nowoodwind/wavs"],
+        rirs_path='./rirs',
+        seg_len=2**19,
+        mode='train',
+        sr=44100,
+        channels=2,
+        swap_channels_prob=0.5,
+        speed_change_range=(0.9, 1.1),
+    )
+
+    assert len(dataset.valid_freqs) == 441
+
+    from torch.utils.data import DataLoader
+    loader = DataLoader(dataset, batch_size=8, shuffle=True, num_workers=8, drop_last=True)
+
+    import time
+    time_start = time.time()
+    n_batches = 0
+    for batch in loader:
+        print(batch['mix'].shape, batch['music'].shape, batch['noise'].shape, batch['snr_db'].shape)
+        n_batches += 1
+    time_finish = time.time()
+
+    print('Time taken:', time_finish - time_start)
+    print('Number of batches:', n_batches)
+    print('Average batch time:', (time_finish - time_start) / n_batches)
+
+    
