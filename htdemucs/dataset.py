@@ -85,84 +85,6 @@ def _gather_wavs(dirs: List[Path]) -> List[Path]:
     return files
 
 
-# ----------------------
-# Simple Augmenter
-# ----------------------
-class Augmenter:
-    """
-    Lightweight real-time augmentations.
-    You can extend/disable by config flags.
-    """
-    def __init__(self,
-                 gain_db_range: Tuple[float, float] = (-3.0, 3.0),
-                 swap_channels_prob: float = 0.1,
-                 eq_prob: float = 0.2,
-                 eq_gain_db: float = 2.0,
-                 rnd_noise_prob: float = 0.0,
-                 pitch_semitone_range: Tuple[float, float] = None,
-                 rnd_gen: Optional[random.Random] = None):
-        self.gain_db_range = gain_db_range
-        self.swap_channels_prob = swap_channels_prob
-        self.eq_prob = eq_prob
-        self.eq_gain_db = eq_gain_db
-        self.rnd = rnd_gen or random.Random()
-        self.pitch_semitone_range = pitch_semitone_range
-        self.rnd_noise_prob = rnd_noise_prob
-
-        # TODO: fix this hard code of 44100
-        self.flt_b, self.flt_a = sps.butter(4, [7000, 12000], 'bandpass', fs=44100)
-
-    def seed(self, x):
-        self.rnd.seed(x)
-
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (C, T) float32
-        # Gain
-        if self.gain_db_range is not None:
-            db = self.rnd.uniform(*self.gain_db_range)
-            x = x * (10.0 ** (db / 20.0))
-
-        # Swap channels
-        if x.shape[0] == 2 and self.rnd.random() < self.swap_channels_prob:
-            x = x[[1, 0], :]
-
-        # Pitch shift
-        if self.pitch_semitone_range is not None:
-            n_steps = self.rnd.uniform(*self.pitch_semitone_range)
-            if abs(n_steps) > 1e-2:  
-                x = torchaudio.functional.pitch_shift(
-                    waveform=x,
-                    sample_rate=44100,
-                    n_steps=n_steps
-                )
-
-        # Very light EQ: random first-order high-shelf or low-shelf (cheap approximation)
-        if self.rnd.random() < self.eq_prob:
-            # choose high or low shelf
-            is_high = self.rnd.random() < 0.5
-            gain = 10 ** (self.eq_gain_db / 20.0)
-            # naive freq domain slope via linear fade
-            T = x.shape[1]
-            freqs = torch.linspace(0, 1.0, T, device=x.device)
-            mask = freqs if is_high else (1.0 - freqs)
-            mask = 1.0 + (gain - 1.0) * mask  # linear tilt
-            x = x * mask.unsqueeze(0)
-
-        # Some 7k-12k noise
-        if self.rnd.random() < self.rnd_noise_prob:
-            noise = np.random.randn(*x.shape).astype(np.float32)
-            hiss  = sps.lfilter(self.flt_b, self.flt_a, noise, axis=-1)
-            hiss  = sps.lfilter([1.0], [1, -0.97], hiss, axis=-1)       # Long tail
-            snr   = np.random.uniform(0.0, 30.0)
-            s_norm = np.sqrt((x ** 2).mean().item())
-            hiss = hiss.astype(np.float32)
-            gain = 10 ** (-snr / 20) * s_norm / (np.sqrt(np.mean(hiss ** 2)) + 1e-8)
-            hiss *= gain
-
-            x += torch.from_numpy(hiss).to(x.device)
-        
-        return x
-
 
 # ----------------------
 # Dataset
@@ -174,26 +96,29 @@ class BaroqueNoiseDataset(Dataset):
                  rirs_path: str or None,
                  seg_len: int,
                  mode: str = 'train',
-                 seed: Optional[int] = None,
                  sr: int = 44100,
                  channels: int = 2,
-                 sample_width_bytes: int = 2,
-                 music_augment: Optional[Augmenter] = None,
-                 noise_augment: Optional[Augmenter] = None):
+                 swap_channels_prob: float = 0.5,
+                 speed_change_range: Tuple[float, float] or None = (0.9, 1.1),
+                 sample_width_bytes: int = 2):
         """
         mode: 'train' or 'eval'
         """
         assert mode in ('train', 'eval')
         self.mode = mode
 
-        if seed is None:
-            seed = 42 if mode == 'eval' else random.randrange(1 << 31)
-        self.seed = seed
-        self.rnd = random.Random(seed)
+        if mode == 'eval':
+            self.seed = 42
+        else:
+            self.seed = random.SystemRandom().randrange(1 << 63)
+        self.rnd = np.random.Generator(np.random.PCG64(self.seed))
 
         self.sr = sr
         self.seg_len = seg_len
         self.channels = channels
+        self.valid_freqs = []
+        if speed_change_range:
+            self._init_speed_change_freqs(speed_change_range, min_gcd=100)
 
         self.rirs_path = rirs_path
         self._load_rirs()
@@ -212,13 +137,13 @@ class BaroqueNoiseDataset(Dataset):
 
         total_music_frames = 0
         for p in self.music_paths:
-            mm, nframes, nch = _check_and_memmap_wav(p, sr, channels, sample_width_bytes)
+            mm, nframes, _nch = _check_and_memmap_wav(p, sr, channels, sample_width_bytes)
             self.music_db.append({"path": p, "mm": mm, "frames": nframes})
             total_music_frames += max(0, nframes - self.seg_len)
 
         total_noise_frames = 0
         for p in self.noise_paths:
-            mm, nframes, nch = _check_and_memmap_wav(p, sr, channels, sample_width_bytes)
+            mm, nframes, _nch = _check_and_memmap_wav(p, sr, channels, sample_width_bytes)
             self.noise_db.append({"path": p, "mm": mm, "frames": nframes})
             total_noise_frames += max(0, nframes - self.seg_len)
 
@@ -229,23 +154,40 @@ class BaroqueNoiseDataset(Dataset):
 
         self.total_music_frames = total_music_frames
         self.total_music_seconds = total_music_frames / sr
+
         # length of dataset (epoch definition)
         self._length = int(math.floor(self.total_music_seconds / (self.seg_len / sr)))
 
         # build cumulative weights for picking file proportional to length
         self.music_weights = np.array([max(0, d["frames"] - self.seg_len) for d in self.music_db], dtype=np.float64)
         self.music_weights /= self.music_weights.sum()
+        self.music_cumsum_weights = np.cumsum(self.music_weights)
 
         self.noise_weights = np.array([max(0, d["frames"] - self.seg_len) for d in self.noise_db], dtype=np.float64)
         self.noise_weights /= self.noise_weights.sum()
-
-        self.music_cumsum_weights = np.cumsum(self.music_weights)
         self.noise_cumsum_weights = np.cumsum(self.noise_weights)
-
-        # augmenters (can be None)
-        self.music_aug = music_augment
-        self.noise_aug = noise_augment
     
+    def _init_speed_change_freqs(self, speed_change_range, min_gcd):
+        """
+        Initialize valid frequencies for speed changes.
+        Args:
+            speed_change_range: Tuple of (min_speed, max_speed)
+            min_gcd: Minimum required GCD with sample rate
+        """
+        min_r, max_r = speed_change_range
+        min_freq = int(self.sr * min_r)
+        max_freq = int(self.sr * max_r)
+        
+        # Find all valid frequencies where gcd with sr >= min_gcd
+        self.valid_freqs = []
+        for freq in range(min_freq, max_freq + 1):
+            if math.gcd(freq, self.sr) >= min_gcd:
+                self.valid_freqs.append(freq)
+        
+        if not self.valid_freqs:
+            raise ValueError(f"No valid frequencies found for speed change range {speed_change_range} "
+                             f"with sr={self.sr} and min_gcd={min_gcd}")
+
     def _load_rirs(self):
         self.rirs = []
         if not self.rirs_path:
@@ -255,14 +197,35 @@ class BaroqueNoiseDataset(Dataset):
         for path in wav_paths:
             data, _ = sf.read(path)
             arr = data.T.astype(np.float32)
-            if arr.shape[1] >= self.seg_len:
-                arr = arr[:, :self.seg_len]
+
+            krn_len = self.seg_len * 2
+            if arr.shape[1] >= krn_len:
+                arr = arr[:, :krn_len]
             else:
-                arr = np.pad(arr, [[0, 0], [0, self.seg_len - arr.shape[1]]])
+                arr = np.pad(arr, [[0, 0], [0, krn_len - arr.shape[1]]])
             assert tuple(arr.shape) == (2, self.seg_len)
 
-            self.rirs.append([np.fft.fft(arr[0]), np.fft.fft(arr[1])])
-        return
+            lhs, rhs = np.fft.fft(arr[0]), np.fft.fft(arr[1])
+            lhs, rhs = torch.from_numpy(lhs, dtype=torch.complex64), torch.from_numpy(rhs, dtype=torch.complex64)
+            self.rirs.append([lhs, rhs])
+
+    def _pick_rirs(self):
+        if not self.rirs:
+            return None
+            
+        # Randomly select two RIRs (can be the same)
+        idx1 = self.rnd.randint(0, len(self.rirs))
+        idx2 = self.rnd.randint(0, len(self.rirs))
+        
+        # Random blend factor between 0 and 1
+        blend = self.rnd.random()
+        
+        # Blend the RIRs
+        lhs = self.rirs[idx1][0] * blend + self.rirs[idx2][0] * (1 - blend)
+        rhs = self.rirs[idx1][1] * blend + self.rirs[idx2][1] * (1 - blend)
+        
+        return [lhs, rhs]
+
 
     def __len__(self):
         if self.mode == 'eval':
@@ -306,25 +269,18 @@ class BaroqueNoiseDataset(Dataset):
     def reset_seed(self):
         if self.mode == 'eval':
             self.seed = 42
-            self.rnd = random.Random(self.seed)
         else:
-            self.seed = random.SystemRandom().randrange(2**31)
-            self.rnd = random.Random(self.seed)
+            self.seed = random.SystemRandom().randrange(1 << 63)
+        self.rnd.seed(self.seed)
 
     def __getitem__(self, index):
-        self.rnd.seed(str([self.seed, index]))
+        self.rnd.seed(hash((self.seed, index)))
 
         # music
         music = self._pick_segment(self.music_db, self.music_cumsum_weights)
-        if self.music_aug is not None:
-            self.music_aug.seed(str([self.seed, index, 'music']))
-            music = self.music_aug(music)
 
         # noise
         noise = self._pick_segment(self.noise_db, self.noise_cumsum_weights)
-        if self.noise_aug is not None:
-            self.noise_aug.seed(str([self.seed, index, 'noise']))
-            noise = self.noise_aug(noise)
 
         # You can also return mix here if you want:
         # Combine with random SNR each call
