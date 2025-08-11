@@ -171,7 +171,7 @@ def main():
         g_shaped = torch.nn.functional.pad(g_shaped, (0, rir_len - g_shaped.size(1)), mode='constant', value=0.0)  # [2, Lrir]
     elif g_shaped.size(1) > rir_len:
         pos_start = T - int(round(args.halo_sec * target_sr))
-        if pos_start < 0 + rir_len > g_shaped.size(1):
+        if pos_start + rir_len > g_shaped.size(1):
             pos_start = g_shaped.size(1) - rir_len
         g_shaped = g_shaped[:, pos_start:pos_start+rir_len]
 
