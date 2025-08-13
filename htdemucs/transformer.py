@@ -233,11 +233,12 @@ class CrossTransformerEncoderLayer(nn.Module):
     def _get_activation_fn(self, activation):
         if activation == "relu":
             return F.relu
-        elif activation == "gelu":
-            return F.gelu
+        elif activation == "silu":
+            return F.silu
 
-        raise RuntimeError("activation should be relu/gelu, not {}".format(activation))
+        raise RuntimeError("activation should be relu/silu, not {}".format(activation))
 
+@torch.compile(mode="default")
 class CrossTransformerEncoder(nn.Module):
     def __init__(
         self,
@@ -258,7 +259,7 @@ class CrossTransformerEncoder(nn.Module):
         weight_decay: float = 0.0,
         lr: tp.Optional[float] = None,
         layer_scale: bool = False,
-        gelu: bool = True,
+        silu: bool = True,
         sin_random_shift: int = 0,
         weight_pos_embed: float = 1.0,
         cape_mean_normalize: bool = True,
@@ -298,7 +299,7 @@ class CrossTransformerEncoder(nn.Module):
 
         self.lr = lr
 
-        activation: tp.Any = F.gelu if gelu else F.relu
+        activation: tp.Any = F.silu if silu else F.relu
 
         self.norm_in: nn.Module
         self.norm_in_t: nn.Module

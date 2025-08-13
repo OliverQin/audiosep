@@ -89,10 +89,9 @@ def _gather_wavs(dirs: List[Path]) -> List[Path]:
 # ----------------------
 # Dataset
 # ----------------------
-class BaroqueNoiseDataset(Dataset):
+class Wet2DryDataset(Dataset):
     def __init__(self,
                  music_dirs: List[str],
-                 noise_dirs: List[str],
                  rirs_path: str or None,
                  seg_len: int,
                  mode: str = 'train',
@@ -123,15 +122,11 @@ class BaroqueNoiseDataset(Dataset):
 
         # collect files
         self.music_paths = _gather_wavs([Path(p) for p in music_dirs])
-        self.noise_paths = _gather_wavs([Path(p) for p in noise_dirs])
         if len(self.music_paths) == 0:
             raise ValueError("No music wav found")
-        if len(self.noise_paths) == 0:
-            raise ValueError("No noise wav found")
 
         # memmap + lengths
         self.music_db = []
-        self.noise_db = []
 
         total_music_frames = 0
         for p in self.music_paths:
@@ -139,16 +134,8 @@ class BaroqueNoiseDataset(Dataset):
             self.music_db.append({"path": p, "mm": mm, "frames": nframes})
             total_music_frames += max(0, nframes - self.seg_len)
 
-        total_noise_frames = 0
-        for p in self.noise_paths:
-            mm, nframes, _nch = _check_and_memmap_wav(p, sr, channels, sample_width_bytes)
-            self.noise_db.append({"path": p, "mm": mm, "frames": nframes})
-            total_noise_frames += max(0, nframes - self.seg_len)
-
         if total_music_frames <= 0:
             raise ValueError("Music files too short for given segment length")
-        if total_noise_frames <= 0:
-            raise ValueError("Noise files too short for given segment length")
 
         self.total_music_frames = total_music_frames
         self.total_music_seconds = total_music_frames / sr
@@ -160,10 +147,6 @@ class BaroqueNoiseDataset(Dataset):
         self.music_weights = np.array([max(0, d["frames"] - self.seg_len) for d in self.music_db], dtype=np.float64)
         self.music_weights /= self.music_weights.sum()
         self.music_cumsum_weights = np.cumsum(self.music_weights)
-
-        self.noise_weights = np.array([max(0, d["frames"] - self.seg_len) for d in self.noise_db], dtype=np.float64)
-        self.noise_weights /= self.noise_weights.sum()
-        self.noise_cumsum_weights = np.cumsum(self.noise_weights)
 
         # augmentation parameters
         self.swap_channels_prob = swap_channels_prob
@@ -287,18 +270,22 @@ class BaroqueNoiseDataset(Dataset):
         if seg.shape[1] > 2 * self.seg_len:
             seg = seg[:, :2 * self.seg_len]
 
+        # Two version: dry and wet
         if rir:
             maxv = np.abs(seg).max()
             fft_seg = torch.fft.fft(seg, dim=-1)
             fft_seg[0, :] *= rir[0]
             fft_seg[1, :] *= rir[1]
-            seg = torch.fft.ifft(fft_seg, dim=-1).real
+            wet_seg = torch.fft.ifft(fft_seg, dim=-1).real
 
-            after_maxv = np.abs(seg).max() + 1e-7
-            seg = seg * (maxv / after_maxv)
+            after_maxv = np.abs(wet_seg).max() + 1e-7
+            wet_seg = wet_seg * (maxv / after_maxv)
+        else:
+            raise ValueError("RIR is None, cannot apply wet processing")
 
         seg = seg[:, -self.seg_len:]
-        return seg
+        wet_seg = wet_seg[:, -self.seg_len:]
+        return seg, wet_seg
 
     def _weighted_choice(self, cumsum_weights: np.ndarray) -> int:
         # random.Random has random() in [0,1)
@@ -322,41 +309,26 @@ class BaroqueNoiseDataset(Dataset):
             rir = [rir[1], rir[0]]
 
         # Pick segments
-        music = self._pick_segment(self.music_db, self.music_cumsum_weights, rir)
-        noise = self._pick_segment(self.noise_db, self.noise_cumsum_weights, rir)
-
-        # Noise normalization
-        snr_db = self.rnd.uniform(-10, 10)  # example range
-
-        music_power = music.pow(2).mean()
-        noise_power = noise.pow(2).mean() + 1e-12
-        target_noise_power = music_power / (10 ** (snr_db / 10))
-        scale = (target_noise_power / noise_power).sqrt()
-        noise_scaled = noise * scale
-        mix = music + noise_scaled
+        dry, wet = self._pick_segment(self.music_db, self.music_cumsum_weights, rir)
 
         # Mix peak normalization
         target_peak = self.rnd.uniform(0.15, 0.95)
-        mix_peak = mix.abs().max()
+        mix_peak = max(wet.abs().max(), dry.abs().max())
         coeff = target_peak / (mix_peak + 1e-6)
 
-        music *= coeff
-        noise_scaled *= coeff
-        mix *= coeff
+        dry *= coeff
+        wet *= coeff
 
         return {
-            "mix": mix,               # (C,T)
-            "music": music,           # (C,T)
-            "noise": noise_scaled,    # scaled version
-            "snr_db": torch.tensor(snr_db, dtype=torch.float32)
+            "wet": wet,           # (C,T)
+            "dry": dry,           # (C,T)
         }
 
 
 if __name__ == "__main__":
     # Example usage
-    dataset = BaroqueNoiseDataset(
+    dataset = Wet2DryDataset(
         music_dirs=["./dataset/flute_recorder_sopranino/wavs"],
-        noise_dirs=["./dataset/classical_nowoodwind/wavs"],
         rirs_path='./rirs',
         seg_len=2**19,
         mode='train',
@@ -375,7 +347,7 @@ if __name__ == "__main__":
     time_start = time.time()
     n_batches = 0
     for batch in loader:
-        print(batch['mix'].shape, batch['music'].shape, batch['noise'].shape, batch['snr_db'].shape)
+        print(batch['dry'].shape, batch['wet'].shape)
         n_batches += 1
     time_finish = time.time()
 

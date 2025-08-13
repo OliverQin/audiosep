@@ -59,6 +59,7 @@ def pad1d(x: torch.Tensor, paddings: tp.Tuple[int, int], mode: str = 'constant',
     assert (out[..., padding_left: padding_left + length] == x0).all()
     return out
 
+@torch.compile(mode="default")
 class DConv(nn.Module):
     """
     New residual branches in each encoder layer.
@@ -67,7 +68,7 @@ class DConv(nn.Module):
     e.g. of dim `channels // compress`.
     """
     def __init__(self, channels: int, compress: float = 4, depth: int = 2, init: float = 1e-4,
-                 norm=True, attn=False, heads=4, ndecay=4, gelu=True,
+                 norm=True, attn=False, heads=4, ndecay=4, silu=True,
                  kernel=3, dilate=True):
         """
         Args:
@@ -81,7 +82,7 @@ class DConv(nn.Module):
             heads: number of heads for the LocalAttention.
             ndecay: number of decay controls in the LocalAttention.
             lstm: use LSTM.
-            gelu: Use GELU activation.
+            silu: Use SiLU activation.
             kernel: kernel size for the (dilated) convolutions.
             dilate: if true, use dilation, increasing with the depth.
         """
@@ -101,8 +102,8 @@ class DConv(nn.Module):
         hidden = int(channels / compress)
 
         act: tp.Type[nn.Module]
-        if gelu:
-            act = nn.GELU
+        if silu:
+            act = nn.SiLU
         else:
             act = nn.ReLU
 
@@ -128,6 +129,7 @@ class DConv(nn.Module):
             x = x + layer(x)
         return x
 
+@torch.compile(mode="default")
 class ScaledEmbedding(nn.Module):
     """
     Boost learning rate for embeddings (with `scale`).
@@ -153,6 +155,7 @@ class ScaledEmbedding(nn.Module):
         out = self.embedding(x) * self.scale
         return out
 
+@torch.compile(mode="default")
 class HEncLayer(nn.Module):
     def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False,
                  freq=True, dconv=True, norm=True, context=0, dconv_kw={}, pad=True,
@@ -228,7 +231,7 @@ class HEncLayer(nn.Module):
             if inject.dim() == 3 and y.dim() == 4:
                 inject = inject[:, :, None]
             y = y + inject
-        y = F.gelu(self.norm1(y))
+        y = F.silu(self.norm1(y))
         if self.dconv:
             if self.freq:
                 B, C, Fr, T = y.shape
@@ -243,6 +246,7 @@ class HEncLayer(nn.Module):
             z = y
         return z
 
+@torch.compile(mode="default")
 class MultiWrap(nn.Module):
     """
     Takes one layer and replicate it N times. each replica will act
@@ -332,7 +336,7 @@ class MultiWrap(nn.Module):
                 start = limit
         out = torch.cat(outs, dim=2)
         if not self.conv and not last:
-            out = F.gelu(out)
+            out = F.silu(out)
         if self.conv:
             return out
         else:
@@ -416,7 +420,7 @@ class HDecLayer(nn.Module):
             z = z[..., self.pad:self.pad + length]
             assert z.shape[-1] == length, (z.shape[-1], length)
         if not self.last:
-            z = F.gelu(z)
+            z = F.silu(z)
         return z, y
 
 class HTDemucs(nn.Module):
@@ -502,7 +506,7 @@ class HTDemucs(nn.Module):
         t_weight_decay=0.0,
         t_lr=None,
         t_layer_scale=True,
-        t_gelu=True,
+        t_silu=True,
         t_weight_pos_embed=1.0,
         t_sin_random_shift=0,
         t_cape_mean_normalize=True,
@@ -586,7 +590,7 @@ class HTDemucs(nn.Module):
             t_weight_decay: (float) weight decay for the transformer
             t_lr: (float) specific learning rate for the transformer
             t_layer_scale: (bool) Layer Scale for the transformer
-            t_gelu: (bool) activations of the transformer are GeLU if True, ReLU else
+            t_silu: (bool) activations of the transformer are SiLU if True, ReLU else
             t_weight_pos_embed: (float) weighting of the positional embedding
             t_cape_mean_normalize: (bool) if t_emb="cape", normalisation of positional embeddings
                 see: https://arxiv.org/abs/2106.03143
@@ -678,7 +682,7 @@ class HTDemucs(nn.Module):
                     "depth": dconv_depth,
                     "compress": dconv_comp,
                     "init": dconv_init,
-                    "gelu": True,
+                    "silu": True,
                 },
             }
             kwt = dict(kw)
@@ -793,7 +797,7 @@ class HTDemucs(nn.Module):
                 weight_decay=t_weight_decay,
                 lr=t_lr,
                 layer_scale=t_layer_scale,
-                gelu=t_gelu,
+                silu=t_silu,
                 sin_random_shift=t_sin_random_shift,
                 weight_pos_embed=t_weight_pos_embed,
                 cape_mean_normalize=t_cape_mean_normalize,
