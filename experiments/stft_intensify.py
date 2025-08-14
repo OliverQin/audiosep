@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import argparse, os
+import argparse
+import os
+import sys
 import numpy as np
 import soundfile as sf
 import torch
 import torch.nn.functional as F
+
+from pathlib import Path
 
 @torch.no_grad()
 def rir_spectro_densify(
     x: torch.Tensor,           # [C, T], float32, on device
     sr: int,
     n_fft: int = 2048,
-    hop: int = 512,
+    hop: int = 256,
     win: torch.Tensor = None,
     t_split_ms: float = 40.0,  # 早期/后期分界（只对后期做致密化）
     blend_ms: float = 80.0,    # 从原始->致密化的线性过渡时长
-    kF: int = 21,              # 频率维局部均值核大小（奇数）
-    kT: int = 21,              # 时间维局部均值核大小（奇数）
+    kF: int = 9,              # 频率维局部均值核大小（奇数）
+    kT: int = 51,              # 时间维局部均值核大小（奇数）
+    n_rounds: int = 7,  # 局部能量估计迭代次数
     stereo_lock: bool = True,  # 立体声用同一随机场，避免左右不一致
     energy_match: bool = True, # 每帧能量匹配，保持原始包络
     eps: float = 1e-8
@@ -47,18 +52,15 @@ def rir_spectro_densify(
     padF, padT = kF//2, kT//2
     kernel = torch.ones((1, 1, kF, kT), device=device, dtype=mag2.dtype) / (kF*kT)
     mag2_ = mag2.unsqueeze(1)  # [C,1,F,T]
+    mag2_ = mag2_[:, :, 1:, :]  # 去掉直流分量
 
-    mag2_pad = F.pad(mag2_, (padT, padT, padF, padF), mode='reflect')
-    pow_local = F.conv2d(mag2_pad, kernel)  # [C,F,T]
+    for _t in range(n_rounds):
+        mag2_pad = F.pad(mag2_, (padT, padT, padF, padF), mode='reflect')
+        pow_local = F.conv2d(mag2_pad, kernel)  # [C,1,F,T]
+        mag2_ = pow_local
 
-    mag2_pad = F.pad(mag2_, (padT, padT, padF, padF), mode='reflect')
-    pow_local = F.conv2d(mag2_pad, kernel)  # [C,F,T]
-
-    mag2_pad = F.pad(mag2_, (padT, padT, padF, padF), mode='reflect')
-    pow_local = F.conv2d(mag2_pad, kernel)  # [C,F,T]
-
-    mag2_pad = F.pad(pow_local, (padT, padT, padF, padF), mode='reflect')
-    pow_local = F.conv2d(mag2_pad, kernel).squeeze(1)  # [C,F,T]
+    pow_local = pow_local.squeeze(1)  # [C,F,T]
+    pow_local = torch.concat([mag2[:, 0:1, :], pow_local], dim=1)
 
     sigma = torch.sqrt(torch.clamp(pow_local, min=0.0) + eps)  # 局部幅度标准差
 
@@ -99,21 +101,8 @@ def rir_spectro_densify(
     y = torch.istft(X_out, n_fft=n_fft, hop_length=hop, window=win, center=True, length=T)
     return y
 
-def main():
-    ap = argparse.ArgumentParser(description="Densify/equalize STFT texture of image-method RIR to mimic real late reverb.")
-    ap.add_argument("input_wav", type=str)
-    ap.add_argument("output_wav", type=str)
-    ap.add_argument("--n_fft", type=int, default=2048)
-    ap.add_argument("--hop", type=int, default=512)
-    ap.add_argument("--t_split_ms", type=float, default=40.0, help="early/late split; only late part is diffused")
-    ap.add_argument("--blend_ms", type=float, default=80.0, help="crossfade length from original to diffused")
-    ap.add_argument("--kF", type=int, default=7, help="freq smoothing kernel")
-    ap.add_argument("--kT", type=int, default=21, help="time smoothing kernel")
-    ap.add_argument("--no_stereo_lock", action="store_true", help="disable shared random field for L/R")
-    ap.add_argument("--cpu", action="store_true", help="force CPU")
-    args = ap.parse_args()
-
-    x_np, sr = sf.read(args.input_wav, always_2d=True, dtype="float32")  # [N, C]
+def proc_one_file(args, in_path: Path, out_path: Path):
+    x_np, sr = sf.read(in_path, always_2d=True, dtype="float32")  # [N, C]
     x_np = x_np.T  # [C, T]
     C, T = x_np.shape
     device = torch.device("cpu" if args.cpu or not torch.cuda.is_available() else "cuda")
@@ -123,13 +112,55 @@ def main():
         x, sr,
         n_fft=args.n_fft, hop=args.hop,
         t_split_ms=args.t_split_ms, blend_ms=args.blend_ms,
-        kF=args.kF, kT=args.kT,
+        kF=args.kF, kT=args.kT, n_rounds=args.n_rounds,
         stereo_lock=(not args.no_stereo_lock)
     ).clamp_(-1.0, 1.0)
 
     y_np = y.detach().cpu().numpy().T  # [T, C]
-    sf.write(args.output_wav, y_np, sr, subtype="FLOAT")
-    print(f"Done. Wrote {args.output_wav}  shape={y_np.shape}  sr={sr}")
+    sf.write(out_path, y_np, sr, subtype="FLOAT")
+    print(f"Done. Wrote {out_path}  shape={y_np.shape}  sr={sr}", file=sys.stderr)
+    
+def main():
+    ap = argparse.ArgumentParser(description="Densify/equalize STFT texture of image-method RIR to mimic real late reverb.")
+    ap.add_argument("input_wav", type=Path)
+    ap.add_argument("output_wav", type=Path)
+    ap.add_argument("--n_fft", type=int, default=2048)
+    ap.add_argument("--hop", type=int, default=256)
+    ap.add_argument("--t_split_ms", type=float, default=40.0, help="early/late split; only late part is diffused")
+    ap.add_argument("--blend_ms", type=float, default=80.0, help="crossfade length from original to diffused")
+    ap.add_argument("--kF", type=int, default=13, help="freq smoothing kernel")
+    ap.add_argument("--kT", type=int, default=21, help="time smoothing kernel")
+    ap.add_argument("--n_rounds", type=int, default=7, help="number of local energy estimation rounds")
+    ap.add_argument("--no_stereo_lock", action="store_true", help="disable shared random field for L/R")
+    ap.add_argument("--cpu", action="store_true", help="force CPU")
+    args = ap.parse_args()
+
+    in_path: Path = args.input_wav
+    out_path: Path = args.output_wav
+
+    if not in_path.exists():
+        print(f"[FATAL] Input path not found: {in_path}", file=sys.stderr)
+        sys.exit(1)
+
+    if in_path.is_file() and out_path.exists() and out_path.is_dir():
+        print("[FATAL] One is file and the other is directory. They must be the same type.", file=sys.stderr)
+        sys.exit(2)
+    if in_path.is_dir() and out_path.exists() and out_path.is_file():
+        print("[FATAL] One is directory and the other is file. They must be the same type.", file=sys.stderr)
+        sys.exit(2)
+
+    if in_path.is_file():
+        proc_one_file(args, in_path, out_path)
+    elif in_path.is_dir():
+        if in_path == out_path:
+            print("[FATAL] Input and output directories must be different.", file=sys.stderr)
+            sys.exit(3)
+        if not out_path.exists():
+            out_path.mkdir(parents=True, exist_ok=True)
+
+        for in_file in in_path.glob("*.wav"):
+            out_file = out_path / in_file.name
+            proc_one_file(args, in_file, out_file)
 
 if __name__ == "__main__":
     main()
