@@ -13,39 +13,51 @@ def generate_random_rir(
     fs=44100,
     rir_length=2**19,
     room_xy_range=(3, 60),
-    room_h_range=(3, 50),
+    room_hratio_range=(0.8, 1.2),
     absorption_range=(0.01, 0.9),
+    scattering_range=(0.02, 0.4),
     mic_xy_angle_range=(50, 130),
     mic_distance_range=(0, 0.02),
 ):
     # 1. Random geometrics of the room (x, y, h)
-    room_size = sample_log_uniform(*room_xy_range)
-    room_height = sample_log_uniform(*room_h_range)
+    room_x = sample_log_uniform(*room_xy_range)
+    room_y = sample_log_uniform(*room_xy_range)
+    room_height = (room_x + room_y) / 2. * np.random.uniform(*room_hratio_range)
     room_dims = [
-        room_size,
-        room_size,
+        room_x,
+        room_y,
         room_height
     ]
     
     # 2. Random absorption rate
     abs_coef = sample_log_uniform(*absorption_range)
-    materials = pra.Material(energy_absorption=abs_coef, scattering=sample_log_uniform(0.001, 0.9))
+    sctr_coef = sample_log_uniform(*scattering_range)
+    materials = pra.Material(energy_absorption=abs_coef, scattering=sctr_coef)
     
     # 3. ShoeBox room
     room = pra.ShoeBox(
         p=room_dims,
         fs=fs,
         materials=materials,
-        max_order=100,            # Max times of reflection
+        max_order=150,            # Max times of reflection
         air_absorption=True,
         ray_tracing=True
     )
+    room.set_ray_tracing(True)
     
     # 4. Source should be >=0.5m to the wall
+    speaker_height = 2.12931851592
+    if room_height < speaker_height:
+        raise ValueError("Room height is too small for the speaker height.")
+
+    listener_height = 1.75159357159
+    if room_height < listener_height:
+        raise ValueError("Room height is too small for the listener height.")
+    
     src = np.array([
         np.random.uniform(0.5, room_dims[0] - 0.5),
         np.random.uniform(0.5, room_dims[1] - 0.5),
-        np.random.uniform(0.5, room_dims[2] - 0.5)
+        speaker_height
     ])
     room.add_source(src.tolist())
     
@@ -53,7 +65,7 @@ def generate_random_rir(
     mic_center = np.array([
         np.random.uniform(0.5, room_dims[0] - 0.5),
         np.random.uniform(0.5, room_dims[1] - 0.5),
-        np.random.uniform(0.5, room_dims[2] - 0.5)
+        listener_height
     ])
     
     # XY Microphone: almost the same position, pointing to two directions
@@ -70,6 +82,11 @@ def generate_random_rir(
     mic_array = pra.MicrophoneArray(mics, fs)
     room.add_microphone_array(mic_array)
     
+    # import matplotlib
+    # import matplotlib.pyplot
+    # fig, ax = room.plot()
+    # matplotlib.pyplot.show()
+
     # 6. Compute RIR
     room.compute_rir()
 
