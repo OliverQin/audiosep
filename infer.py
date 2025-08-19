@@ -14,6 +14,8 @@ import ffmpeg
 import numpy as np
 import torch
 
+from scipy.signal import medfilt
+
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
@@ -53,7 +55,7 @@ def overlap_add_sliding(x, chunk_len, hop, process_fn):
     n_chunks = 1 + int(np.ceil((T - chunk_len) / hop)) if T > chunk_len else 1
 
     # Hann window：window L
-    win = np.hanning(chunk_len).astype(np.float32) + 1e-6  # [0..1..0]
+    win = np.hanning(chunk_len).astype(np.float32) + 1e-8  # [0..1..0]
     win = win[:, None]  # (L,1) broadcast to LC
 
     out_music = np.zeros((T, C), dtype=np.float32)
@@ -62,14 +64,18 @@ def overlap_add_sliding(x, chunk_len, hop, process_fn):
 
     for i in range(n_chunks):
         start = i * hop
-        end   = start + chunk_len
+        rnd_shift = np.random.randint(-hop // 2, hop // 2)
+
+        start += rnd_shift
+        if start < 0:
+            start = 0
+        
+        end = start + chunk_len
         if end > T:
-            # pad to chunk len
-            pad_len = end - T
-            chunk = np.zeros((chunk_len, C), dtype=np.float32)
-            chunk[:chunk_len - pad_len] = x[start:T]
-        else:
-            chunk = x[start:end]
+            start -= (end - T)
+            end = T
+
+        chunk = x[start:end]
 
         # infer
         m_chunk, n_chunk = process_fn(chunk)  # (chunk_len, C)
@@ -146,7 +152,7 @@ def main():
     ap.add_argument("flac", type=pathlib.Path)
     ap.add_argument("--out_dir", type=pathlib.Path, default=pathlib.Path("infer_out"))
     ap.add_argument("--sr", type=int, default=44100)
-    ap.add_argument("--chunk_len", type=int, default=2**19, help="samples per chunk expected by model")
+    ap.add_argument("--chunk_len", type=int, default=2**18, help="samples per chunk expected by model")
     ap.add_argument("--fade_sec", type=float, default=1.0, help="crossfade seconds")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
@@ -155,10 +161,11 @@ def main():
 
     # --- load audio ---
     audio_np, sr = load_audio_ffmpeg(args.flac, args.sr)  # (T,C)
+    audio_np *= 0.9 / np.abs(audio_np).max()
     T, C = audio_np.shape
 
     # --- load model ---
-    model = HTDemucs(['music', 'noise'])
+    model = HTDemucs(['music', 'noise'], t_layers=7)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(args.ckpt, map_location=device)
     state_dict = ckpt.get("model", ckpt.get("model_state", ckpt))  # try several keys
@@ -181,7 +188,11 @@ def main():
         return music, noise
 
     # music_np, noise_np = overlap_add_process(audio_np, args.chunk_len, fade_len, process_fn)
-    music_np, noise_np = overlap_add_sliding(audio_np, args.chunk_len, args.chunk_len // 8, process_fn)
+    music_np, noise_np = overlap_add_sliding(audio_np, args.chunk_len, args.chunk_len // 32, process_fn)
+    # music_np[np.abs(music_np) < 0.01] = 0.0
+    # noise_np[np.abs(noise_np) < 0.01] = 0.0
+    # music_np = medfilt(music_np, kernel_size=[11, 1])
+    # noise_np = medfilt(noise_np, kernel_size=[11, 1])
 
     stem = args.flac.stem
     save_audio(args.out_dir / f"{stem}_music.wav", music_np, sr)
