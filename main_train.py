@@ -14,6 +14,24 @@ from htdemucs import *
 
 from tqdm import tqdm
 
+@torch.no_grad()
+def load_weight():
+    base_path = 'baseline.wav'
+    x, sr = soundfile.read(base_path, always_2d=True, dtype="float32")
+    x = torch.from_numpy(x.T)  # (C, T)
+    freq = torch.stft(x, n_fft=2048, hop_length=256, win_length=2048, 
+                      window=torch.hann_window(2048, periodic=False, device=x.device, dtype=x.dtype, requires_grad=False),
+                      center=False, normalized=True, onesided=True, return_complex=True)
+    l1sum = freq.abs().sum(dim=-1).sum(dim=0)
+
+    l1sum = 1.0 / (l1sum + l1sum.mean() * 0.1)
+    l1sum = l1sum / l1sum.sum()
+    l1sum *= (2048 // 2 + 1)
+
+    return l1sum
+
+default_weight = load_weight()
+
 def _dump_batch(batch, out_dir="debug_out", sr=44100):
     os.makedirs(out_dir, exist_ok=True)
     mix   = batch["mix"]    # [B, C, T], float32 tensor
@@ -46,13 +64,15 @@ def hann_weighted_l1_loss(pred: torch.Tensor, tgt: torch.Tensor, eps: float = 1e
 
 @torch.compile(mode="default")
 def high_freq_loss(pred: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
+    global default_weight
     B, C, L = pred.shape
 
     pred = pred.reshape(-1, L)
     tgt = tgt.reshape(-1, L)
 
     win = 2048
-    cut = 400
+    cut = 50
+    weight = default_weight.to(pred.device, dtype=pred.dtype)
     mask = torch.hann_window(win, device=pred.device, dtype=pred.dtype, requires_grad=False)
     pred_freq = torch.stft(pred, n_fft=win, hop_length=win//4, win_length=win, window=mask, center=False, normalized=True, onesided=True, return_complex=True)
     tgt_freq = torch.stft(tgt, n_fft=win, hop_length=win//4, win_length=win, window=mask, center=False, normalized=True, onesided=True, return_complex=True)
@@ -66,20 +86,22 @@ def high_freq_loss(pred: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
     out_win = torch.hann_window(n_frames, device=pred.device, dtype=pred.dtype, requires_grad=False)
     out_win /= out_win.sum()
     out_win = out_win.view(1, 1, n_frames, 1)
-    pred_freq = pred_freq[:, cut:, :, :]
-    tgt_freq = tgt_freq[:, cut:, :, :]
+    pred_freq = (pred_freq * weight.view(1, -1, 1, 1))[:, cut:, :, :]
+    tgt_freq = (tgt_freq * weight.view(1, -1, 1, 1))[:, cut:, :, :]
 
     return (out_win * (pred_freq - tgt_freq).abs()).sum() / (B * C * 2 * (n_freq - cut) * n_frames)
 
 @torch.compile(mode="default")
 def low_freq_loss(pred: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
+    global default_weight
     B, C, L = pred.shape
 
     pred = pred.reshape(-1, L)
     tgt = tgt.reshape(-1, L)
 
     win = 2048
-    cut = 450
+    cut = 60
+    weight = default_weight.to(pred.device, dtype=pred.dtype)
     mask = torch.hann_window(win, device=pred.device, dtype=pred.dtype, requires_grad=False)
     pred_freq = torch.stft(pred, n_fft=win, hop_length=win//4, win_length=win, window=mask, center=False, normalized=True, onesided=True, return_complex=True)
     tgt_freq = torch.stft(tgt, n_fft=win, hop_length=win//4, win_length=win, window=mask, center=False, normalized=True, onesided=True, return_complex=True)
@@ -93,10 +115,10 @@ def low_freq_loss(pred: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
     out_win = torch.hann_window(n_frames, device=pred.device, dtype=pred.dtype, requires_grad=False)
     out_win /= out_win.sum()
     out_win = out_win.view(1, 1, n_frames, 1)
-    pred_freq = pred_freq[:, :cut, :, :]
-    tgt_freq = tgt_freq[:, :cut, :, :]
+    pred_freq = (pred_freq * weight.view(1, -1, 1, 1))[:, :cut, :, :]
+    tgt_freq = (tgt_freq * weight.view(1, -1, 1, 1))[:, :cut, :, :]
 
-    return (out_win * (pred_freq - tgt_freq).abs()).sum() / (B * C * 2 * (n_freq - cut) * n_frames)
+    return (out_win * (pred_freq - tgt_freq).abs()).sum() / (B * C * 2 * (cut) * n_frames)
 
 
 def si_sdr(estimate, target, eps=1e-8):
@@ -146,16 +168,16 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
     model.to(device)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              num_workers=num_workers, drop_last=True)
+                              num_workers=num_workers, drop_last=True, pin_memory=True)
     eval_loader  = DataLoader(eval_ds,  batch_size=batch_size, shuffle=False,
-                              num_workers=num_workers, drop_last=True)
+                              num_workers=num_workers, drop_last=True, pin_memory=True)
 
     opt = optim.Adam(model.parameters(), lr=lr, betas=betas)
     scaler = torch.amp.GradScaler("cuda", enabled=amp)
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-    # load_model_ckpt(model, opt, scaler, "ckpt_short_loss_v1/epoch_004.pt", device)
+    # load_model_ckpt(model, opt, scaler, "ckpt_short_low_v3/epoch_006.pt", device)
     for epoch in range(1, epochs + 1):
         train_ds.reset_seed()
         model.train()
@@ -164,9 +186,9 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False)
 
         for batch in pbar:
-            mix   = batch["mix"].to(device)     # (B,C,T)
-            music = batch["music"].to(device)
-            noise = batch["noise"].to(device)
+            mix   = batch["mix"].to(device, non_blocking=False)     # (B,C,T)
+            music = batch["music"].to(device, non_blocking=False)
+            noise = batch["noise"].to(device, non_blocking=False)
 
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda', enabled=amp):
@@ -175,7 +197,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
                 pred_noise = out[:, 1]
 
                 l1_loss = hann_weighted_l1_loss(pred_music, music) + hann_weighted_l1_loss(pred_noise, noise)
-                freq_loss = 5e3 * (low_freq_loss(pred_music, music) + low_freq_loss(pred_noise, noise))
+                freq_loss = 1e5 * (low_freq_loss(pred_music, music) + low_freq_loss(pred_noise, noise))
                 loss = l1_loss + freq_loss
 
             scaler.scale(loss).backward()
@@ -212,7 +234,9 @@ if __name__ == '__main__':
 
     train_ds = BaroqueNoiseDataset(
         music_dirs, noise_dirs,
-        rirs_path='./rirs',
+        rirs_path='./intense_rirs',
+        mouth_noise_dirs=["./dataset/mouth_noise"],
+        mouth_noise_prob=0.2,
         seg_len=2**18,
         mode='train',
         swap_channels_prob=0.5,
@@ -228,7 +252,7 @@ if __name__ == '__main__':
         speed_change_range=None,  # No speed change in eval
     )
 
-    train_loop(model, train_ds, eval_ds, save_dir="ckpt_short_low_v1",
+    train_loop(model, train_ds, eval_ds, save_dir="ckpt_short_low_w_v2",
                epochs=50, batch_size=4, lr=3e-4, betas=(0.9, 0.999),
                num_workers=8, device="cuda", grad_clip=None, amp=True)
 
