@@ -95,6 +95,8 @@ class BaroqueNoiseDataset(Dataset):
                  noise_dirs: List[str],
                  rirs_path: str or None,
                  seg_len: int,
+                 mouth_noise_dirs: List[str] = [],
+                 mouth_noise_prob: float = 0.15,
                  mode: str = 'train',
                  sr: int = 44100,
                  channels: int = 2,
@@ -129,6 +131,10 @@ class BaroqueNoiseDataset(Dataset):
         if len(self.noise_paths) == 0:
             raise ValueError("No noise wav found")
 
+        # mouth noise files
+        self.mouth_noise_paths = _gather_wavs([Path(p) for p in mouth_noise_dirs])
+        self.mouth_noise_prob = mouth_noise_prob
+
         # memmap + lengths
         self.music_db = []
         self.noise_db = []
@@ -149,6 +155,11 @@ class BaroqueNoiseDataset(Dataset):
             raise ValueError("Music files too short for given segment length")
         if total_noise_frames <= 0:
             raise ValueError("Noise files too short for given segment length")
+
+        self.mouth_noise_db = []
+        for p in self.mouth_noise_paths:
+            mm, nframes, _nch = _check_and_memmap_wav(p, sr, channels, sample_width_bytes)
+            self.mouth_noise_db.append({"path": p, "mm": mm, "frames": nframes})
 
         self.total_music_frames = total_music_frames
         self.total_music_seconds = total_music_frames / sr
@@ -208,6 +219,11 @@ class BaroqueNoiseDataset(Dataset):
                 arr = np.pad(arr, [[0, 0], [0, krn_len - arr.shape[1]]])
             assert tuple(arr.shape) == (2, self.seg_len * 2)
 
+            # Align RIR to the maximum energy position
+            idx = arr.max(axis=0).argmax()
+            if idx > 0:
+                arr = np.roll(arr, -idx, axis=1)
+
             lhs = np.fft.fft(arr[0]).astype(np.complex64)
             rhs = np.fft.fft(arr[1]).astype(np.complex64)
             lhs, rhs = torch.from_numpy(lhs), torch.from_numpy(rhs)
@@ -235,8 +251,54 @@ class BaroqueNoiseDataset(Dataset):
             return self._length // 16
         return self._length
 
+    def _pick_mouth_noise(self, length: int) -> np.ndarray or None:
+        if not self.mouth_noise_db:
+            return None
+
+        # Pick a random mouth noise file
+        idx = self.rnd.integers(len(self.mouth_noise_db))
+        entry = self.mouth_noise_db[idx]
+        frames = entry["frames"]
+
+        # Randomly select many segments of [50, 200) ms
+        # And concat them together, with 20 ms crossfade
+        # Using hann window for crossfade
+        min_len = int(self.sr * 0.05)  # 50 ms
+        max_len = int(self.sr * 0.2)   # 200 ms
+        head_len = int(self.sr * 0.02)  # 20 ms
+        
+        ret = np.zeros((length, self.channels), dtype=np.float32)
+        weight = np.zeros((length, self.channels), dtype=np.float32)
+
+        noise_length = 0
+        while noise_length < length:
+            seg_len = self.rnd.integers(min_len, max_len)
+            if noise_length - head_len + seg_len > length:
+                seg_len = length - noise_length + head_len
+            
+            start = self.rnd.integers(frames - seg_len)
+            
+            piece = entry["mm"][start:start + seg_len, :].astype(np.float32) * (1.0 / 32768.0)
+            win = sps.windows.hann(seg_len, sym=True).astype(np.float32) + 1e-6
+
+            if noise_length == 0:
+                # First segment, no crossfade
+                ret[0:seg_len, :] = piece * win[:, None]
+                weight[0:seg_len, :] = win[:, None]
+
+                noise_length += seg_len
+            else:
+                # Crossfade with previous segment
+                prev_end = noise_length - head_len
+                ret[prev_end:prev_end+seg_len, :] += piece * win[:, None]
+                weight[prev_end:prev_end+seg_len, :] += win[:, None]
+
+                noise_length = prev_end + seg_len
+        
+        return ret / weight
+
     @torch.no_grad()
-    def _pick_segment(self, db_list, cumsum_weights, rir) -> torch.Tensor:
+    def _pick_segment(self, db_list, cumsum_weights, rir, with_mouth_noise=False) -> torch.Tensor:
         # Pick file index by weights
         idx = self._weighted_choice(cumsum_weights)
         entry = db_list[idx]
@@ -274,6 +336,18 @@ class BaroqueNoiseDataset(Dataset):
             seg = np.pad(seg, ((0, 0), (lpad, rpad)), mode='constant', constant_values=0)
 
         seg = torch.from_numpy(seg)  # (C, T)
+
+        # Mouth noise augmentation
+        if with_mouth_noise and self.mouth_noise_db:
+            noise = self._pick_mouth_noise(seg.shape[1])
+            seg_pow_avg = float((seg ** 2).mean().item())
+            noise_pow_avg = (noise ** 2).mean() + 1e-12
+
+            target_noise_pow = seg_pow_avg * (10 ** (self.rnd.uniform(-20, -10) / 10))
+            scale = (target_noise_pow / noise_pow_avg) ** 0.5
+            noise *= scale
+
+            seg += torch.from_numpy(noise).T.to(seg.device)
 
         # Resample if needed
         if orig_freq != self.sr:
@@ -322,7 +396,8 @@ class BaroqueNoiseDataset(Dataset):
             rir = [rir[1], rir[0]]
 
         # Pick segments
-        music = self._pick_segment(self.music_db, self.music_cumsum_weights, rir)
+        wmn = self.mouth_noise_db and self.rnd.random() < self.mouth_noise_prob
+        music = self._pick_segment(self.music_db, self.music_cumsum_weights, rir, with_mouth_noise=wmn)
         noise = self._pick_segment(self.noise_db, self.noise_cumsum_weights, rir)
 
         # Noise normalization
@@ -357,6 +432,7 @@ if __name__ == "__main__":
     dataset = BaroqueNoiseDataset(
         music_dirs=["./dataset/flute_recorder_sopranino/wavs"],
         noise_dirs=["./dataset/classical_nowoodwind/wavs"],
+        mouth_noise_dirs=["./dataset/mouth_noise"],
         rirs_path='./rirs',
         seg_len=2**19,
         mode='train',
