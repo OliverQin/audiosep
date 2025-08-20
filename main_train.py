@@ -133,25 +133,26 @@ def si_sdr(estimate, target, eps=1e-8):
     return 10 * torch.log10(ratio + eps)
 
 @torch.no_grad()
-def evaluate(model, loader, device):
-    model.eval()
-    sdr_music_all, sdr_noise_all = [], []
-    for batch in tqdm(loader, desc="Eval", leave=False):
-        mix   = batch["mix"].to(device)     # (B,C,T)
-        music = batch["music"].to(device)
-        noise = batch["noise"].to(device)
+def evaluate(model, loader, device, amp=True):
+    with torch.amp.autocast('cuda', enabled=amp):
+        model.eval()
+        sdr_music_all, sdr_noise_all = [], []
+        for batch in tqdm(loader, desc="Eval", leave=False):
+            mix   = batch["mix"].to(device, non_blocking=True)     # (B,C,T)
+            music = batch["music"].to(device, non_blocking=True)
+            noise = batch["noise"].to(device, non_blocking=True)
 
-        out = model(mix)                    # (B,2,C,T)
-        pred_music = out[:, 0]              # (B,C,T)
-        pred_noise = out[:, 1]
+            out = model(mix)                    # (B,2,C,T)
+            pred_music = out[:, 0]              # (B,C,T)
+            pred_noise = out[:, 1]
 
-        sdr_music_all.append(si_sdr(pred_music, music).cpu())
-        sdr_noise_all.append(si_sdr(pred_noise, noise).cpu())
+            sdr_music_all.append(si_sdr(pred_music, music).cpu())
+            sdr_noise_all.append(si_sdr(pred_noise, noise).cpu())
 
-    return {
-        "SI-SDR_music": torch.cat(sdr_music_all).mean().item(),
-        "SI-SDR_noise": torch.cat(sdr_noise_all).mean().item()
-    }
+        return {
+            "SI-SDR_music": torch.cat(sdr_music_all).mean().item(),
+            "SI-SDR_noise": torch.cat(sdr_noise_all).mean().item()
+        }
 
 def load_model_ckpt(model, optimizer, scaler, path, device):
     checkpoint = torch.load(path, map_location=device)
@@ -186,9 +187,9 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False)
 
         for batch in pbar:
-            mix   = batch["mix"].to(device, non_blocking=False)     # (B,C,T)
-            music = batch["music"].to(device, non_blocking=False)
-            noise = batch["noise"].to(device, non_blocking=False)
+            mix   = batch["mix"].to(device, non_blocking=True)     # (B,C,T)
+            music = batch["music"].to(device, non_blocking=True)
+            noise = batch["noise"].to(device, non_blocking=True)
 
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda', enabled=amp):
@@ -197,7 +198,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
                 pred_noise = out[:, 1]
 
                 l1_loss = hann_weighted_l1_loss(pred_music, music) + hann_weighted_l1_loss(pred_noise, noise)
-                freq_loss = 1e5 * (low_freq_loss(pred_music, music) + low_freq_loss(pred_noise, noise))
+                freq_loss = 1e5 * (high_freq_loss(pred_music, music) + high_freq_loss(pred_noise, noise))
                 loss = l1_loss + freq_loss
 
             scaler.scale(loss).backward()
@@ -212,7 +213,7 @@ def train_loop(model, train_ds, eval_ds, save_dir="ckpt",
             pbar.set_postfix(loss=running_loss / (pbar.n or 1), freq_loss=running_freq_loss / (pbar.n or 1))
 
         eval_ds.reset_seed()
-        metrics = evaluate(model, eval_loader, device)
+        metrics = evaluate(model, eval_loader, device, amp=amp)
         print(f"[Epoch {epoch}] loss={running_loss/len(train_loader):.4f} | "
               f"freq_loss={running_freq_loss/len(train_loader):.4f} | "
               f"SI-SDR_music={metrics['SI-SDR_music']:.2f} | "
@@ -252,7 +253,7 @@ if __name__ == '__main__':
         speed_change_range=None,  # No speed change in eval
     )
 
-    train_loop(model, train_ds, eval_ds, save_dir="ckpt_short_low_w_v2",
+    train_loop(model, train_ds, eval_ds, save_dir="ckpt_short_hi_w_v2",
                epochs=50, batch_size=4, lr=3e-4, betas=(0.9, 0.999),
                num_workers=8, device="cuda", grad_clip=None, amp=True)
 
