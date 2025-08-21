@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 
-from typing import List, Tuple, Optional, Dict
-
 import torch
-import torchaudio
 
-from einops import rearrange, reduce, repeat
+from einops import rearrange
 
 
 class Log1pSTFT(torch.nn.Module):
@@ -21,14 +18,14 @@ class Log1pSTFT(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size = x.shape[0]
-        x = rearrange(x, 'b c t -> (b c) t', b=batch_size, c=self.channels)
+        x = rearrange(x, 'b c len -> (b c) len', b=batch_size, c=self.channels)
 
         freq = torch.stft(
             x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window,
             return_complex=True, normalized=False, center=True, onesided=True
         )
         freq = torch.view_as_real(freq)
-        freq = rearrange(freq, '(b c) freq len h -> b len (c freq h)', b=batch_size, c=self.channels, h=2)
+        freq = rearrange(freq, '(b c) freq len h -> b (c freq h) len', b=batch_size, c=self.channels, h=2)
 
         sgn_freq = torch.sign(freq)
         log_freq = torch.log1p(torch.abs(freq))
@@ -38,19 +35,21 @@ class Log1pSTFT(torch.nn.Module):
 
     def restore(self, x: torch.Tensor) -> torch.Tensor:
         batch_size = x.shape[0]
-        x = rearrange(x, 'b len (c freq h) -> (b c) freq len h', b=batch_size, c=self.channels, h=2)
+        x = rearrange(x, 'b (c freq h) len -> (b c) freq len h', b=batch_size, c=self.channels, h=2)
 
         sgn_x = torch.sign(x)
         exp_x = torch.expm1(torch.abs(x))
         x = sgn_x * exp_x
         
+        if x.stride()[-1] != 1:
+            x = x.contiguous()
         x = torch.view_as_complex(x)
         x = torch.istft(
             x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window,
             normalized=False, center=True, onesided=True
         )
         
-        return rearrange(x, '(b c) t -> b c t', b=batch_size, c=self.channels)
+        return rearrange(x, '(b c) len -> b c len', b=batch_size, c=self.channels)
 
 if __name__ == "__main__":
     # Example usage
@@ -63,4 +62,5 @@ if __name__ == "__main__":
     print(x_restore.shape)
 
     assert x.shape == x_restore.shape, "Restored tensor shape does not match original"
-    print(torch.abs(x - x_restore).max())  # Should be close to zero
+    print("Mean L1 of x", torch.abs(x).mean())
+    print("Max difference after restoration:", torch.abs(x - x_restore).max())  # Should be close to zero
