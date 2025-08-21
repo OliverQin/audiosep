@@ -4,7 +4,7 @@ import torch
 
 from einops import rearrange
 
-
+@torch.compile()
 class Log1pSTFT(torch.nn.Module):
     def __init__(self, channels = 2, n_fft: int = 4096, hop_length: int = None):
         super(Log1pSTFT, self).__init__()
@@ -16,20 +16,34 @@ class Log1pSTFT(torch.nn.Module):
         self.window = torch.hann_window(n_fft, periodic=False)
         self.channels = channels
 
+    @torch.compiler.disable()
+    def _in_stft(self, x: torch.Tensor) -> torch.Tensor:
+        spct = torch.stft(
+            x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window,
+            return_complex=True, normalized=False, center=True, onesided=True
+        )
+        return torch.view_as_real(spct)
+
+    @torch.compiler.disable()
+    def _in_istft(self, x: torch.Tensor) -> torch.Tensor:
+        if x.stride()[-1] != 1:
+            x = x.contiguous()
+        x = torch.view_as_complex(x)
+        return torch.istft(
+            x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window,
+            normalized=False, center=True, onesided=True
+        )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size = x.shape[0]
         x = rearrange(x, 'b c len -> (b c) len', b=batch_size, c=self.channels)
 
-        freq = torch.stft(
-            x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window,
-            return_complex=True, normalized=False, center=True, onesided=True
-        )
-        freq = torch.view_as_real(freq)
-        freq = rearrange(freq, '(b c) freq len h -> b (c freq h) len', b=batch_size, c=self.channels, h=2)
+        spct = self._in_stft(x)
+        spct = rearrange(spct, '(b c) freq len h -> b (c freq h) len', b=batch_size, c=self.channels, h=2)
 
-        sgn_freq = torch.sign(freq)
-        log_freq = torch.log1p(torch.abs(freq))
-        output = sgn_freq * log_freq
+        sgn_spct = torch.sign(spct)
+        log_spct = torch.log1p(torch.abs(spct))
+        output = sgn_spct * log_spct
 
         return output
 
@@ -41,13 +55,7 @@ class Log1pSTFT(torch.nn.Module):
         exp_x = torch.expm1(torch.abs(x))
         x = sgn_x * exp_x
         
-        if x.stride()[-1] != 1:
-            x = x.contiguous()
-        x = torch.view_as_complex(x)
-        x = torch.istft(
-            x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window,
-            normalized=False, center=True, onesided=True
-        )
+        x = self._in_istft(x)
         
         return rearrange(x, '(b c) len -> b c len', b=batch_size, c=self.channels)
 
