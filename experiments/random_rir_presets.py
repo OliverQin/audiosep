@@ -99,6 +99,7 @@ def generate_random_rir(
 
     dir1 = _rodrigues_rotate(fwd, up, +mic_angle_half)
     dir2 = _rodrigues_rotate(fwd, up, -mic_angle_half)
+    print('dirs', dir1, dir2)
     az1, col1 = _vec_to_azimuth_colatitude(dir1)
     az2, col2 = _vec_to_azimuth_colatitude(dir2)
 
@@ -124,17 +125,12 @@ def generate_random_rir(
 
     # room.rir -> list of list: shape (n_mics, n_sources)
     rirs = []
-    max_len = 0
     for mic_idx in range(len(room.rir)):
         rir = np.array(room.rir[mic_idx][0])
-        max_len = max(max_len, len(rir))
+        rirs.append(rir[:rir_length])
 
-    for mic_idx in range(len(room.rir)):
-        if len(rir) < max_len:
-            rir = np.pad(rir, (0, max_len - len(rir)))
-        if len(rir) > rir_length:
-            rir = rir[:rir_length]
-        rirs.append(rir)
+    max_len = max(len(r) for r in rirs)
+    rirs = [np.pad(r, (0, max_len - len(r))) for r in rirs]
     
     # normalize
     output = np.vstack(rirs)
