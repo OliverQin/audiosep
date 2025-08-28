@@ -168,7 +168,7 @@ if __name__ == '__main__':
     base_path = Path('./rirs')
     base_path.mkdir(exist_ok=True)
 
-    N_PER_CLASS = 30
+    N_PER_CLASS = 50
     FS = 44100
     RIR_LEN = 2**20
 
