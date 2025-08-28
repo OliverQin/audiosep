@@ -82,6 +82,7 @@ def generate_random_rir(
     
     # 5. Random microphone pos
     mic_center = np.array([0., 0., 0.])
+    # Mic should be inside the room
     while ((mic_center - np.array([0, 0, 0])) <= 0).any() or ((mic_center - np.array(room_dims)) >= 0).any():
         # Random direction
         mic_dir = np.random.normal(size=(3,))
@@ -143,18 +144,21 @@ configs = {
         "room_h_range": (2.4, 3.2),
         "speaker_wall_distance": 0.5,
         "speaker_height_range": (1.0, 2.0),
+        "mic_speaker_distance_range": (0.5, 1.5),
     },
     "medium": {
         "room_xy_range": (12.0, 35.0),
         "room_h_range": (4.0, 9.0),
         "speaker_wall_distance": 2.0,
         "speaker_height_range": (1.0, 2.5),
+        "mic_speaker_distance_range": (1.0, 2.0),
     },
     "large": {
         "room_xy_range": (35.0, 120.0),
         "room_h_range": (10.0, 30.0),
         "speaker_wall_distance": 5.0,
-        "speaker_height_range": (1.0, 3.5)
+        "speaker_height_range": (1.0, 3.5),
+        "mic_speaker_distance_range": (1.0, 3.0),
     },
 }
 
@@ -177,6 +181,7 @@ if __name__ == '__main__':
                 room_h_range=cfg["room_h_range"],
                 speaker_wall_distance=cfg["speaker_wall_distance"],
                 speaker_height_range=cfg["speaker_height_range"],
+                mic_speaker_distance_range=cfg["mic_speaker_distance_range"],
             ).T
 
             sf.write(str(base_path / f"{tag}_{i:03d}.wav"), rir, FS, subtype="FLOAT")
