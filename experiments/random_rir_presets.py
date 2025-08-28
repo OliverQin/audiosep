@@ -133,10 +133,6 @@ def generate_random_rir(
     
     # normalize
     output = np.vstack(rirs)
-
-    for ch in range(2):
-        v_sum = (output[ch] ** 2).sum()**0.5
-        output[ch] /= v_sum
     
     return output 
 
