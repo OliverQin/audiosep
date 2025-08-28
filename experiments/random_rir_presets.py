@@ -23,7 +23,7 @@ def _vec_to_azimuth_colatitude(v):
     v = _normalize(v)
     x, y, z = v
     az = np.arctan2(y, x)
-    col = np.arccos(np.clip(z, -1.0, 1.0))
+    col = np.arccos(z)
     return az, col
 
 def _rodrigues_rotate(vec, axis, angle_rad):
@@ -36,14 +36,14 @@ def _rodrigues_rotate(vec, axis, angle_rad):
 
 def generate_random_rir(
     fs=44100,
-    rir_length=2**25,
+    rir_length=2**21,
     room_xy_range=(3, 60),
     room_h_range=(2.8, 3.2),
     speaker_wall_distance=0.5,
-    speaker_height_range=(1.5, 2.5),
-    absorption_range=(0.01, 0.9),
-    scattering_range=(0.02, 0.4),
-    mic_xy_angle_range=(50, 130),
+    speaker_height_range=(1.0, 2.5),
+    absorption_range=(0.05, 0.99),
+    scattering_range=(0.02, 0.2),
+    mic_xy_angle_range=(85, 95),
     mic_speaker_distance_range=(0.1, 1.5),
 ):
     # 1. Random geometrics of the room (x, y, h)
@@ -66,7 +66,7 @@ def generate_random_rir(
         p=room_dims,
         fs=fs,
         materials=materials,
-        max_order=170,            # Max times of reflection
+        max_order=180,            # Max times of reflection
         air_absorption=True,
         ray_tracing=False
     )
@@ -103,10 +103,10 @@ def generate_random_rir(
     az2, col2 = _vec_to_azimuth_colatitude(dir2)
 
     mic1 = Cardioid(
-        orientation=DirectionVector(azimuth=az1, colatitude=col1),
+        orientation=DirectionVector(azimuth=az1, colatitude=col1, degrees=False),
     )
     mic2 = Cardioid(
-        orientation=DirectionVector(azimuth=az2, colatitude=col2),
+        orientation=DirectionVector(azimuth=az2, colatitude=col2, degrees=False),
     )
 
     mics = np.tile(mic_center.reshape(3, 1), (1, 2))
@@ -144,9 +144,6 @@ if __name__ == '__main__':
     np.random.seed(31415926)
 
     for i in range(20):
-        try:
-            a = generate_random_rir().T
-        except:
-            a = generate_random_rir().T
+        a = generate_random_rir().T
         sf.write(f"newrirs/{i:06d}.wav", a, 44100, subtype="FLOAT")
 
