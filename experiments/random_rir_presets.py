@@ -42,7 +42,7 @@ def generate_random_rir(
     room_h_range=(2.8, 3.2),
     speaker_wall_distance=0.5,
     speaker_height_range=(1.0, 2.5),
-    absorption_range=(0.05, 0.99),
+    absorption_range=(0.01, 0.99),
     scattering_range=(0.02, 0.2),
     mic_xy_angle_range=(85, 95),
     mic_speaker_distance_range=(0.1, 1.5),
