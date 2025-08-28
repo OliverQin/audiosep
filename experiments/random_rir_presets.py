@@ -6,6 +6,7 @@ import soundfile as sf
 import numpy as np
 import pyroomacoustics as pra
 
+from pathlib import Path
 from pyroomacoustics.directivities.analytic import Cardioid
 from pyroomacoustics.directivities.direction import DirectionVector
 
@@ -134,12 +135,49 @@ def generate_random_rir(
     # normalize
     output = np.vstack(rirs)
     
-    return output 
+    return output
+
+configs = {
+    "small": {
+        "room_xy_range": (3.0, 8.0),
+        "room_h_range": (2.4, 3.2),
+        "speaker_wall_distance": 0.5,
+        "speaker_height_range": (1.0, 2.0),
+    },
+    "medium": {
+        "room_xy_range": (12.0, 35.0),
+        "room_h_range": (4.0, 9.0),
+        "speaker_wall_distance": 2.0,
+        "speaker_height_range": (1.0, 2.5),
+    },
+    "large": {
+        "room_xy_range": (35.0, 120.0),
+        "room_h_range": (10.0, 30.0),
+        "speaker_wall_distance": 5.0,
+        "speaker_height_range": (1.0, 3.5)
+    },
+}
 
 if __name__ == '__main__':
     np.random.seed(31415926)
 
-    for i in range(20):
-        a = generate_random_rir().T
-        sf.write(f"newrirs/{i:06d}.wav", a, 44100, subtype="FLOAT")
+    base_path = Path('./rirs')
+    base_path.mkdir(exist_ok=True)
 
+    N_PER_CLASS = 30
+    FS = 44100
+    RIR_LEN = 2**20
+
+    for tag, cfg in configs.items():
+        for i in range(N_PER_CLASS):
+            rir = generate_random_rir(
+                fs=FS,
+                rir_length=RIR_LEN,
+                room_xy_range=cfg["room_xy_range"],
+                room_h_range=cfg["room_h_range"],
+                speaker_wall_distance=cfg["speaker_wall_distance"],
+                speaker_height_range=cfg["speaker_height_range"],
+            ).T
+
+            sf.write(str(base_path / f"{tag}_{i:03d}.wav"), rir, FS, subtype="FLOAT")
+            
