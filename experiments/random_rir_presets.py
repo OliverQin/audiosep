@@ -99,7 +99,6 @@ def generate_random_rir(
 
     dir1 = _rodrigues_rotate(fwd, up, +mic_angle_half)
     dir2 = _rodrigues_rotate(fwd, up, -mic_angle_half)
-    print('dirs', dir1, dir2)
     az1, col1 = _vec_to_azimuth_colatitude(dir1)
     az2, col2 = _vec_to_azimuth_colatitude(dir2)
 
