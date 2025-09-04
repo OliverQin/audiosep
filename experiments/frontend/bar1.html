@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>音乐游戏原型 · Notes CSV + 伴奏 WAV/MP3</title>
+    <style>
+      :root {
+        --bg: #0b0f14;
+        --panel: #0f1620;
+        --accent: #6ee7ff;
+        --accent2: #a7f3d0;
+        --grid: #1f2a37;
+        --active: #ffd166;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --good: #10b981;
+        --warn: #f59e0b;
+        --bad: #ef4444;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.4 ui-sans-serif, system-ui, Segoe UI, Roboto, Helvetica,
+          Arial;
+      }
+      .wrap {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        min-height: 100%;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        background: linear-gradient(180deg, #0f1620, #0c121a);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        border-bottom: 1px solid #111827;
+      }
+      header .row {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      label {
+        display: inline-flex;
+        gap: 0.5rem;
+        align-items: center;
+        background: #0a1017;
+        border: 1px solid #111827;
+        border-radius: 0.5rem;
+        padding: 0.35rem 0.5rem;
+      }
+      input[type="file"],
+      input[type="number"],
+      input[type="range"] {
+        color: var(--text);
+      }
+      button {
+        background: #1f2937;
+        border: 1px solid #233047;
+        color: #e5e7eb;
+        border-radius: 0.6rem;
+        padding: 0.45rem 0.8rem;
+        cursor: pointer;
+      }
+      button:hover {
+        filter: brightness(1.1);
+      }
+      button[disabled] {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .spacer {
+        flex: 1;
+      }
+      #status {
+        font-variant-numeric: tabular-nums;
+        opacity: 0.9;
+      }
+
+      main {
+        display: grid;
+        grid-template-rows: 1fr auto;
+        gap: 0.75rem;
+        padding: 0.5rem 1rem 1rem;
+      }
+      #stageWrap {
+        position: relative;
+        border: 1px solid #111827;
+        border-radius: 0.75rem;
+        overflow: hidden;
+        background: radial-gradient(80% 100% at 50% 0%, #0f1620, #0b0f14);
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #timeline {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        opacity: 0.85;
+      }
+      #timeline > div {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+      }
+      .meter {
+        height: 0.5rem;
+        width: 140px;
+        background: #0b1220;
+        border-radius: 999px;
+        overflow: hidden;
+        border: 1px solid #111827;
+      }
+      .meter > i {
+        display: block;
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), var(--accent2));
+        width: 0;
+      }
+      .pill {
+        padding: 0.2rem 0.5rem;
+        background: #101827;
+        border: 1px solid #1f2a37;
+        border-radius: 999px;
+        color: #9ca3af;
+      }
+
+      /* 新增样式 */
+      #overview {
+        position: relative;
+        height: 80px;
+        margin-bottom: 0.5rem;
+        background: var(--panel);
+        border: 1px solid #111827;
+        border-radius: 0.5rem;
+        cursor: grab;
+      }
+
+      #overview:active {
+        cursor: grabbing;
+      }
+
+      #overviewCanvas {
+        width: 100%;
+        height: 100%;
+      }
+
+      #viewportIndicator {
+        position: absolute;
+        top: 0;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="row">
+          <label
+            >Notes CSV
+            <input id="csvFile" type="file" accept=".csv" />
+          </label>
+          <label
+            >伴奏音频
+            <input id="audioFile" type="file" accept="audio/*" />
+          </label>
+          <label title="像素/秒（时间→屏幕速度）"
+            >速度 px/s
+            <input
+              id="pxPerSec"
+              type="number"
+              step="20"
+              value="180"
+              style="width: 90px"
+            />
+          </label>
+          <label title="垂直每个音高占用的像素"
+            >轨高 px
+            <input
+              id="laneH"
+              type="number"
+              step="2"
+              value="16"
+              style="width: 80px"
+            />
+          </label>
+          <label title="渲染提前窗口（秒）"
+            >可视窗
+            <input
+              id="winAhead"
+              type="number"
+              step="0.5"
+              value="8"
+              style="width: 70px"
+            />
+          </label>
+          <label
+            title="把视觉时间向后推（毫秒）以补偿音频输出延迟，使画面与“听到的声音”更一致"
+            ><span>延迟补偿</span>
+            <input id="latency" type="range" min="0" max="120" value="0" />
+            <span id="latencyLabel" class="pill">0 ms</span>
+          </label>
+          <div class="spacer"></div>
+          <button id="loadBtn">加载</button>
+          <button id="playBtn" disabled>▶︎ 播放</button>
+          <button id="pauseBtn" disabled>⏸ 暂停</button>
+          <button id="stopBtn" disabled>⏹ 停止</button>
+        </div>
+        <div id="status" class="row"></div>
+      </header>
+
+      <main>
+        <div id="stageWrap">
+          <canvas id="stage"></canvas>
+        </div>
+        <!-- 新增的时间轴和概览 -->
+        <div id="overview">
+          <canvas id="overviewCanvas"></canvas>
+          <div id="viewportIndicator"></div>
+        </div>
+        <div id="timeline">
+          <div>
+            <span class="pill">当前时间</span><span id="nowLbl">0.000</span>s
+          </div>
+          <div>
+            <span class="pill">可视音符</span><span id="visCount">0</span>
+          </div>
+          <div class="meter"><i id="meter"></i></div>
+          <div class="pill">提示：中心竖线 = 你正听到的时间点</div>
+        </div>
+      </main>
+
+      <footer style="padding: 0.5rem 1rem; color: #9ca3af; opacity: 0.85">
+        CSV
+        需包含列：<code>note,time_start,time_end</code>（秒）。高音在上，低音在下；左→右滚动。严格同步由
+        WebAudio 的 <code>currentTime</code> 驱动，渲染不依赖帧率。
+      </footer>
+    </div>
+
+    <script>
+      (() => {
+        const $ = (sel) => document.querySelector(sel);
+        const csvFile = $("#csvFile");
+        const audioFile = $("#audioFile");
+        const pxPerSecInput = $("#pxPerSec");
+        const laneHInput = $("#laneH");
+        const winAheadInput = $("#winAhead");
+        const latencySlider = $("#latency");
+        const latencyLabel = $("#latencyLabel");
+        const loadBtn = $("#loadBtn");
+        const playBtn = $("#playBtn");
+        const pauseBtn = $("#pauseBtn");
+        const stopBtn = $("#stopBtn");
+        const status = $("#status");
+        const nowLbl = $("#nowLbl");
+        const visCountLbl = $("#visCount");
+        const meter = $("#meter");
+
+        const canvas = $("#stage");
+        const ctx = canvas.getContext("2d");
+
+        const overviewCanvas = $("#overviewCanvas");
+        const overviewCtx = overviewCanvas.getContext("2d");
+        let isDragging = false;
+        let lastDragX = 0;
+
+        let dpr = window.devicePixelRatio || 1;
+
+        // ==== 固定音域设置：F5(77) ~ F7(101) 共 25 行 ====
+        const RANGE_MIN = 77; // F5
+        const RANGE_MAX = 101; // F7
+        const LANES = RANGE_MAX - RANGE_MIN + 1; // 25
+        const LEFT_GUTTER_PX = 96; // 左侧表头宽（CSS像素）
+
+        // 音名（只显示音级，不带八度）
+        const PC_LABELS = [
+          "C",
+          "C#/Db",
+          "D",
+          "D#/Eb",
+          "E",
+          "F",
+          "F#/Gb",
+          "G",
+          "G#/Ab",
+          "A",
+          "A#/Bb",
+          "B",
+        ];
+        const pcOf = (m) => ((m % 12) + 12) % 12;
+        const pcLabel = (m) => PC_LABELS[pcOf(m)];
+
+        // 颜色：按 12 个音级固定色，相同音名跨八度同色
+        function pcHue(pc) {
+          return (pc * 30) % 360;
+        } // 12 等分色相环
+        function colorBase(pc) {
+          return `hsl(${pcHue(pc)} 65% 52%)`;
+        }
+        function colorStroke(pc) {
+          return `hsl(${pcHue(pc)} 60% 36%)`;
+        }
+        function colorActive(pc) {
+          return `hsl(${pcHue(pc)} 80% 62%)`;
+        }
+        function colorLaneTint(pc) {
+          return `hsla(${pcHue(pc)} 70% 60% / 0.06)`;
+        }
+        function colorGlow(pc) {
+          return `hsla(${pcHue(pc)} 90% 60% / 0.55)`;
+        }
+
+        // State
+        let notes = []; // {note, t0, t1, dur}
+        let minNote = RANGE_MIN,
+          maxNote = RANGE_MAX;
+        let audioCtx = null;
+        let buffer = null; // AudioBuffer
+        let source = null; // current AudioBufferSourceNode
+        let t0Ctx = 0; // context time when transport started
+        let offsetSec = 0; // where in the audio we started (seek offset)
+        let paused = false;
+        let pausedAt = 0; // audio time at pause
+        let rafId = 0;
+        let running = false;
+
+        const ui = {
+          get pxPerSec() {
+            return Number(pxPerSecInput.value) || 180;
+          },
+          get laneH() {
+            return Number(laneHInput.value) || 16;
+          },
+          get winAhead() {
+            return Number(winAheadInput.value) || 8;
+          },
+          get latencyComp() {
+            return Number(latencySlider.value) / 1000;
+          }, // seconds
+        };
+
+        latencySlider.addEventListener("input", () => {
+          latencyLabel.textContent = `${latencySlider.value} ms`;
+        });
+        latencyLabel.textContent = `${latencySlider.value} ms`;
+
+        function setStatus(msg, ok = true) {
+          status.textContent = msg;
+          status.style.color = ok ? "var(--text)" : "var(--bad)";
+        }
+
+        function resize() {
+          const rect = canvas.parentElement.getBoundingClientRect();
+          dpr = window.devicePixelRatio || 1;
+          canvas.width = Math.max(300, rect.width * dpr);
+          canvas.height = Math.max(300, Math.min(900, rect.height) * dpr);
+        }
+        window.addEventListener("resize", resize);
+        resize();
+
+        function parseCSV(text) {
+          // 去 BOM
+          if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+
+          // 分行（支持 CRLF/LF），过滤空行
+          const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+          if (lines.length === 0) throw new Error("CSV 为空");
+
+          // 简单且健壮的分隔符探测：优先识别制表符，其次逗号、分号
+          const firstLine = lines[0];
+          let delim = "	";
+          if (firstLine.indexOf("	") === -1) {
+            // 比较分割后的列数，取列数最多的那个
+            const cand = [",", ";"];
+            let best = ",";
+            let bestCount = firstLine.split(",").length;
+            for (const d of cand) {
+              const count = firstLine.split(d).length;
+              if (count > bestCount) {
+                bestCount = count;
+                best = d;
+              }
+            }
+            delim = best;
+          }
+
+          const header = firstLine
+            .split(delim)
+            .map((s) => s.trim().toLowerCase());
+          const iN = header.indexOf("note");
+          const iS = header.indexOf("time_start");
+          const iE = header.indexOf("time_end");
+          if (iN < 0 || iS < 0 || iE < 0) {
+            const showDelim = delim === "	" ? "\t" : delim;
+            throw new Error(
+              `CSV 需要列: note,time_start,time_end（检测到分隔符"${showDelim}"）`
+            );
+          }
+
+          // 字段解析（支持小数逗号）
+          const unquote = (s) =>
+            s && s[0] === '"' && s[s.length - 1] === '"' ? s.slice(1, -1) : s;
+          const toNum = (v) => {
+            v = unquote(String(v).trim());
+            if (v === "") return NaN;
+            // 仅将小数逗号替换为点（不影响分隔符）
+            return Number(v.replace(",", "."));
+          };
+
+          const rows = [];
+          let outOfRange = 0;
+          for (let i = 1; i < lines.length; i++) {
+            const cols = lines[i].split(delim);
+            if (cols.length <= Math.max(iN, iS, iE)) continue;
+            const note = toNum(cols[iN]);
+            const t0 = toNum(cols[iS]);
+            const t1 = toNum(cols[iE]);
+            if (
+              Number.isFinite(note) &&
+              Number.isFinite(t0) &&
+              Number.isFinite(t1)
+            ) {
+              if (note < RANGE_MIN || note > RANGE_MAX) {
+                outOfRange++;
+                continue;
+              }
+              rows.push({ note, t0, t1, dur: t1 - t0 });
+            }
+          }
+
+          rows.sort((a, b) => a.t0 - b.t0);
+          if (outOfRange > 0) {
+            alert(
+              `有 ${outOfRange} 个音符超出可视范围 (MIDI ${RANGE_MIN}..${RANGE_MAX})，已忽略。`
+            );
+          }
+          if (rows.length === 0) throw new Error("CSV 解析后没有有效音符");
+          return rows;
+        }
+
+        async function loadAll() {
+          try {
+            if (!csvFile.files[0] || !audioFile.files[0]) {
+              setStatus("请选择 Notes CSV 与 伴奏音频");
+              return;
+            }
+            setStatus("正在加载并解析…");
+            const csvText = await csvFile.files[0].text();
+            notes = parseCSV(csvText);
+            if (!notes.length)
+              throw new Error("CSV 解析结果为空（或全部越界被忽略）");
+            minNote = RANGE_MIN;
+            maxNote = RANGE_MAX;
+
+            // 准备音频
+            audioCtx =
+              audioCtx ||
+              new (window.AudioContext || window.webkitAudioContext)();
+            const arrbuf = await audioFile.files[0].arrayBuffer();
+            // 兼容 Safari 旧实现：decodeAudioData 既支持 Promise 也支持回调
+            buffer = await new Promise((resolve, reject) => {
+              const p = audioCtx.decodeAudioData(arrbuf, resolve, reject);
+              if (p && typeof p.then === "function")
+                p.then(resolve).catch(reject);
+            });
+            setStatus(
+              `已加载：音符 ${
+                notes.length
+              } 个，音域 MIDI ${RANGE_MIN}..${RANGE_MAX}，音频 ${buffer.duration.toFixed(
+                2
+              )} s`
+            );
+            playBtn.disabled = false;
+            pauseBtn.disabled = true;
+            stopBtn.disabled = true;
+
+            renderOverview();
+            updateViewportIndicator(0);
+          } catch (err) {
+            console.error(err);
+            setStatus("加载失败：" + err.message, false);
+          }
+        }
+
+        function makeSource(startAtCtxTime, offset) {
+          const src = audioCtx.createBufferSource();
+          src.buffer = buffer;
+          src.connect(audioCtx.destination);
+          const when = startAtCtxTime;
+          const dur = Math.max(0, buffer.duration - offset);
+          src.start(when, offset, dur);
+          return src;
+        }
+
+        function draw(now) {
+          const { gutter } = drawLanes();
+          const w = canvas.width;
+          const h = canvas.height;
+          const pps = ui.pxPerSec * dpr;
+
+          // 计算可视范围
+          const visStart = now - 2; // 左侧回溯2秒
+          const visEnd = now + ui.winAhead;
+          const visibleNotes = notes.filter(
+            (n) => n.t1 >= visStart && n.t0 <= visEnd
+          );
+          visCountLbl.textContent = visibleNotes.length;
+
+          // 时间标记线（当前播放位置）
+          const nowX = Math.round(gutter + 2 * pps);
+          ctx.strokeStyle = "rgba(255,255,255,0.5)";
+          ctx.setLineDash([4 * dpr, 4 * dpr]);
+          ctx.beginPath();
+          ctx.moveTo(nowX + 0.5, 0);
+          ctx.lineTo(nowX + 0.5, h);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // 绘制音符
+          for (const note of visibleNotes) {
+            const x = gutter + (note.t0 - now + 2) * pps;
+            const width = note.dur * pps;
+            const y = midiToY(note.note);
+            const pc = pcOf(note.note);
+
+            // 判断是否是当前播放的音符（在时间线上）
+            const isPlaying = note.t0 <= now && note.t1 >= now;
+
+            // 音符底色 - 正在播放时使用高亮色
+            ctx.fillStyle = isPlaying ? colorActive(pc) : colorBase(pc);
+            ctx.fillRect(x, y - (ui.laneH * dpr) / 2, width, ui.laneH * dpr);
+
+            // 边框
+            ctx.strokeStyle = isPlaying ? colorGlow(pc) : colorStroke(pc);
+            ctx.strokeRect(x, y - (ui.laneH * dpr) / 2, width, ui.laneH * dpr);
+
+            // 如果正在播放，添加发光效果
+            if (isPlaying) {
+              ctx.save();
+              ctx.shadowBlur = 10 * dpr;
+              ctx.shadowColor = colorGlow(pc);
+              ctx.strokeRect(
+                x,
+                y - (ui.laneH * dpr) / 2,
+                width,
+                ui.laneH * dpr
+              );
+              ctx.restore();
+            }
+          }
+
+          // 更新当前时间显示
+          nowLbl.textContent = Math.max(0, now).toFixed(3);
+        }
+
+        function play() {
+          if (!audioCtx || !buffer || running) return;
+
+          // 增加预缓冲时间，减少延迟
+          const lead = 0.05; // 降低预缓冲时间从0.12到0.05秒
+          const nowCtx = audioCtx.currentTime;
+          const startAt = nowCtx + lead;
+
+          if (paused) {
+            offsetSec = pausedAt;
+            paused = false;
+          }
+
+          // 创建音频源之前先恢复上下文
+          if (audioCtx.state === "suspended") {
+            audioCtx.resume();
+          }
+
+          source = makeSource(startAt, offsetSec);
+          t0Ctx = startAt - offsetSec;
+
+          // 添加精确的时间同步
+          const latencyHint =
+            (audioCtx.baseLatency || 0) + (audioCtx.outputLatency || 0);
+          t0Ctx += latencyHint; // 补偿系统音频延迟
+
+          running = true;
+          running = true;
+          cancelAnimationFrame(rafId);
+
+          // ——用“可听时间”驱动画面（优先 getOutputTimestamp）——
+          function getHeardCtxTime() {
+            if (!audioCtx) return 0;
+            const ts = audioCtx.getOutputTimestamp
+              ? audioCtx.getOutputTimestamp()
+              : null;
+            if (ts && Number.isFinite(ts.contextTime) && ts.contextTime > 0) {
+              return ts.contextTime;
+            }
+            const base = audioCtx.baseLatency || 0;
+            const out = audioCtx.outputLatency || 0;
+            return audioCtx.currentTime - base - out;
+          }
+
+          const render = () => {
+            if (!running) return;
+            rafId = requestAnimationFrame(render);
+            const heardCtx = getHeardCtxTime();
+            const trackNow = heardCtx - t0Ctx - ui.latencyComp; // 轨内"可听时间"
+            draw(trackNow);
+
+            // 更新进度条
+            const total = Math.max(0.001, buffer.duration - offsetSec);
+            const p = Math.min(1, Math.max(0, trackNow) / total);
+            meter.style.width = p * 100 + "%";
+
+            // 更新预览窗位置
+            updateViewportIndicator(trackNow + offsetSec); // 注意这里要加上 offsetSec
+          };
+          render();
+
+          playBtn.disabled = true;
+          pauseBtn.disabled = false;
+          stopBtn.disabled = false;
+
+          source.onended = () => {
+            if (running) {
+              stop();
+            }
+          };
+        }
+
+        function pause() {
+          if (!running) return;
+          const heardCtx = audioCtx.getOutputTimestamp
+            ? audioCtx.getOutputTimestamp().contextTime
+            : audioCtx.currentTime;
+          const audioNow = heardCtx - t0Ctx;
+          pausedAt = Math.min(audioNow, buffer.duration);
+          try {
+            source.stop();
+          } catch (e) {}
+          source.disconnect();
+          source = null;
+          running = false;
+          paused = true;
+          cancelAnimationFrame(rafId);
+          playBtn.disabled = false;
+          pauseBtn.disabled = true;
+          stopBtn.disabled = false;
+        }
+
+        function stop() {
+          if (source) {
+            try {
+              source.stop();
+            } catch (e) {}
+            source.disconnect();
+            source = null;
+          }
+          running = false;
+          paused = false;
+          offsetSec = 0;
+          pausedAt = 0;
+          cancelAnimationFrame(rafId);
+          clearCanvas();
+          playBtn.disabled = false;
+          pauseBtn.disabled = true;
+          stopBtn.disabled = true;
+          meter.style.width = "0%";
+          nowLbl.textContent = "0.000";
+          visCountLbl.textContent = "0";
+        }
+
+        function clearCanvas() {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function midiToY(midi) {
+          const laneHpx = ui.laneH * dpr;
+          const topPad = 18 * dpr;
+          const idx = maxNote - midi; // 高音在上
+          const y = Math.round(topPad + idx * laneHpx + laneHpx / 2);
+          return y;
+        }
+
+        function drawLanes() {
+          const w = canvas.width,
+            h = canvas.height;
+          const laneHpx = ui.laneH * dpr;
+          const gutter = Math.round(LEFT_GUTTER_PX * dpr);
+
+          // 背景
+          ctx.fillStyle = "#0c1218";
+          ctx.fillRect(0, 0, w, h);
+
+          // 左侧表头背景
+          ctx.fillStyle = "#0e1622";
+          ctx.fillRect(0, 0, gutter, h);
+          ctx.strokeStyle = "#182332";
+          ctx.beginPath();
+          ctx.moveTo(gutter + 0.5, 0);
+          ctx.lineTo(gutter + 0.5, h);
+          ctx.stroke();
+
+          // 横向每行（按音名着色淡底）+ 标签
+          ctx.font = `${12 * dpr}px ui-sans-serif,system-ui,Segoe UI`;
+          ctx.textBaseline = "middle";
+          for (let m = RANGE_MAX; m >= RANGE_MIN; m--) {
+            const y = midiToY(m);
+            const pc = pcOf(m);
+            // lane tint
+            ctx.fillStyle = colorLaneTint(pc);
+            ctx.fillRect(
+              gutter,
+              y - (ui.laneH * dpr) / 2 - 1,
+              w - gutter,
+              ui.laneH * dpr + 2
+            );
+            // 分隔线
+            ctx.strokeStyle = "rgba(36,51,68,0.9)";
+            ctx.beginPath();
+            ctx.moveTo(gutter, y + (ui.laneH * dpr) / 2);
+            ctx.lineTo(w, y + (ui.laneH * dpr) / 2);
+            ctx.stroke();
+            // 左侧标签
+            ctx.fillStyle = "#cbd5e1";
+            ctx.fillText(pcLabel(m), 10 * dpr, y);
+          }
+
+          return { gutter };
+        }
+
+        function renderOverview() {
+          const canvas = overviewCanvas;
+          const ctx = overviewCtx;
+          const rect = canvas.parentElement.getBoundingClientRect();
+          const dpr = window.devicePixelRatio || 1;
+
+          canvas.width = rect.width * dpr;
+          canvas.height = rect.height * dpr;
+
+          if (!notes.length || !buffer) return;
+
+          const duration = buffer.duration;
+          const w = canvas.width;
+          const h = canvas.height;
+          const pxPerSec = w / duration;
+
+          // 清空背景
+          ctx.fillStyle = "#0c1218";
+          ctx.fillRect(0, 0, w, h);
+
+          // 绘制音符
+          const laneHeight = h / (RANGE_MAX - RANGE_MIN + 1);
+
+          for (const note of notes) {
+            const x = note.t0 * pxPerSec;
+            const width = (note.t1 - note.t0) * pxPerSec;
+            const y = (RANGE_MAX - note.note) * laneHeight;
+
+            const pc = pcOf(note.note);
+            ctx.fillStyle = colorBase(pc);
+            ctx.fillRect(x, y, width, laneHeight);
+          }
+        }
+
+        function updateViewportIndicator(currentTime) {
+          if (!buffer) return;
+
+          const duration = buffer.duration;
+          const rect = overviewCanvas.getBoundingClientRect();
+          const viewWidth = ((ui.winAhead + 2) * rect.width) / duration; // 2秒是左侧回溯
+          const x = ((currentTime - 2) * rect.width) / duration;
+
+          viewportIndicator.style.width = `${viewWidth}px`;
+          viewportIndicator.style.left = `${x}px`;
+        }
+
+        function handleOverviewDrag(e) {
+          if (!buffer || !notes.length) return;
+
+          const rect = overviewCanvas.getBoundingClientRect();
+          const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+          const duration = buffer.duration;
+          const newTime = (x / rect.width) * duration;
+
+          // 如果正在播放,先停止
+          if (running) {
+            stop();
+          }
+
+          // 设置新的偏移时间并更新状态
+          offsetSec = Math.max(0, Math.min(duration, newTime));
+          pausedAt = offsetSec;
+          paused = true;
+
+          // 重绘当前视图
+          draw(offsetSec);
+          updateViewportIndicator(offsetSec);
+
+          // 更新进度条
+          const p = Math.min(1, Math.max(0, offsetSec / duration));
+          meter.style.width = p * 100 + "%";
+
+          // 启用播放按钮
+          playBtn.disabled = false;
+          pauseBtn.disabled = true;
+          stopBtn.disabled = false;
+        }
+
+        // Event Listeners
+        latencySlider.addEventListener("input", () => {
+          latencyLabel.textContent = `${latencySlider.value} ms`;
+        });
+        latencyLabel.textContent = `${latencySlider.value} ms`;
+
+        csvFile.addEventListener("change", loadAll);
+        audioFile.addEventListener("change", loadAll);
+
+        overviewCanvas.addEventListener("mousedown", (e) => {
+          isDragging = true;
+          lastDragX = e.clientX;
+          handleOverviewDrag(e);
+        });
+
+        document.addEventListener("mousemove", (e) => {
+          if (isDragging) {
+            handleOverviewDrag(e);
+          }
+        });
+
+        document.addEventListener("mouseup", () => {
+          isDragging = false;
+        });
+
+        playBtn.addEventListener("click", () => {
+          if (!audioCtx) return;
+          if (audioCtx.state === "suspended") audioCtx.resume();
+          play();
+        });
+        pauseBtn.addEventListener("click", pause);
+        stopBtn.addEventListener("click", stop);
+
+        // 文件拖拽快捷（完善版）：把拖入的 CSV/音频写入各自的 <input type=file>
+        document.addEventListener("dragover", (e) => {
+          e.preventDefault();
+        });
+        document.addEventListener("drop", (e) => {
+          e.preventDefault();
+          const files = Array.from(e.dataTransfer?.files || []);
+          if (!files.length) return;
+          const csv = files.find((f) => /\.csv$/i.test(f.name));
+          const audio = files.find(
+            (f) =>
+              (f.type && f.type.startsWith("audio/")) ||
+              /\.(wav|mp3|m4a|aac|flac|ogg)$/i.test(f.name)
+          );
+          if (csv) {
+            const dt = new DataTransfer();
+            dt.items.add(csv);
+            csvFile.files = dt.files;
+          }
+          if (audio) {
+            const dt = new DataTransfer();
+            dt.items.add(audio);
+            audioFile.files = dt.files;
+          }
+          setStatus("已通过拖拽选择文件，点击“加载”解析");
+        });
+      })();
+    </script>
+  </body>
+</html>
